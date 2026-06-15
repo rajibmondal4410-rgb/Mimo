@@ -1,0 +1,13 @@
+# Environment variables (Secrets)
+.env
+.env.*
+
+# Dependencies (Never commit these)
+node_modules/
+
+# Logs
+npm-debug.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db
