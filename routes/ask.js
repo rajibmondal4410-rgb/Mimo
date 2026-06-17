@@ -17,14 +17,14 @@ async function askUnifiedAI(messages, systemPrompt, tools) {
   // 1. Try Groq (Ultra-fast Llama 3.3)
   if (process.env.GROQ_API_KEY) {
     try {
-      return await callOpenAICompatible('https://api.groq.com/openai/v1/chat/completions', process.env.GROQ_API_KEY, 'llama-3.3-70b-versatile', messages, tools, systemPrompt);
+      return await callOpenAICompatible('https://api.groq.com/openai/v1/chat/completions', process.env.GROQ_API_KEY, 'llama3-groq-70b-8192-tool-use-preview', messages, tools, systemPrompt);
     } catch (e) { errors.push(`Groq: ${e.message}`); }
   }
 
   // 2. Try Gemini (via its official OpenAI-compatibility layer)
   if (process.env.GEMINI_API_KEY) {
     try {
-      return await callOpenAICompatible('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', process.env.GEMINI_API_KEY, 'gemini-1.5-flash', messages, tools, systemPrompt);
+      return await callOpenAICompatible('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', process.env.GEMINI_API_KEY, 'gemini-1.5-flash-lates', messages, tools, systemPrompt);
     } catch (e) { errors.push(`Gemini: ${e.message}`); }
   }
 
