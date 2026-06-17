@@ -1,8 +1,31 @@
 const { google } = require('googleapis');
 
 /**
+ * Extracts the plain text body from a complex Gmail payload.
+ * It searches through the multipart nested structure to find 'text/plain'.
+ */
+function extractEmailBody(payload) {
+  let body = '';
+  if (!payload) return '';
+  
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === 'text/plain') {
+        body += Buffer.from(part.body.data || '', 'base64').toString('utf8');
+      } else if (part.parts) {
+        body += extractEmailBody(part); // recursive search
+      }
+    }
+  } else if (payload.body && payload.body.data) {
+    body = Buffer.from(payload.body.data, 'base64').toString('utf8');
+  }
+  
+  return body.trim() || 'No text body found.';
+}
+
+/**
  * Fetches recent emails from Gmail.
- * Returns clean objects — no raw Gmail API mess exposed to the rest of the app.
+ * Now retrieves the FULL email payload so the AI can read deep content.
  *
  * @param {string} accessToken  — Google access token from JWT
  * @param {number} maxResults   — how many emails to fetch (default 15)
@@ -25,22 +48,24 @@ async function getRecentEmails(accessToken, maxResults = 15) {
   const messages = listRes.data.messages;
   if (!messages || messages.length === 0) return [];
 
-  // Step 2: fetch metadata for each message in parallel
+  // Step 2: fetch FULL payload for each message in parallel
   const fetched = await Promise.all(
     messages.map(m =>
       gmail.users.messages.get({
-        userId:          'me',
-        id:              m.id,
-        format:          'metadata',
-        metadataHeaders: ['From', 'Subject', 'Date'],
+        userId: 'me',
+        id:     m.id,
+        format: 'full', // CRITICAL UPDATE: Gets the whole email, not just metadata
       })
     )
   );
 
-  // Step 3: parse into clean objects
+  // Step 3: parse into clean objects with full body text
   return fetched.map(res => {
     const headers = res.data.payload.headers || [];
-    const get     = name => headers.find(h => h.name === name)?.value || '';
+    // Fix case-sensitivity issues with headers
+    const get = name => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+
+    const fullText = extractEmailBody(res.data.payload);
 
     return {
       id:      res.data.id,
@@ -49,13 +74,13 @@ async function getRecentEmails(accessToken, maxResults = 15) {
       date:    get('Date'),
       snippet: res.data.snippet || '',
       isRead:  !res.data.labelIds?.includes('UNREAD'),
+      body:    fullText
     };
   });
 }
 
 /**
- * Formats emails into a clean text block for Claude.
- * Claude reads this as context before answering.
+ * Formats emails into a clean text block for the AI.
  */
 function formatEmailsForContext(emails) {
   if (!emails.length) return 'No emails found in inbox.';
@@ -66,7 +91,7 @@ function formatEmailsForContext(emails) {
   Subject: ${e.subject}
   Date:    ${e.date}
   Read:    ${e.isRead ? 'Yes' : 'No (unread)'}
-  Preview: ${e.snippet}`
+  Content: ${e.body.substring(0, 800)}...` // Send up to 800 chars of the actual body
   ).join('\n\n');
 }
 
