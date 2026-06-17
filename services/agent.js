@@ -5,7 +5,7 @@ const { searchDriveFiles, readGoogleDoc, formatFilesForContext } = require('./dr
 const { readSheetRange, formatSheetForContext } = require('./sheets');
 const { getTasks, createTask, formatTasksForContext } = require('./tasks');
 
-// ── UNIVERSAL AI CALLER ───────
+// ── UNIVERSAL AI CALLER (Groq -> Gemini -> OpenAI -> Claude) ───────
 async function askUnifiedAI(messages, systemPrompt, tools) {
   const errors = [];
 
@@ -36,7 +36,7 @@ async function askUnifiedAI(messages, systemPrompt, tools) {
 
 // ── AI HELPERS ───────────────────────────────────────────────────────
 async function callOpenAICompatible(url, apiKey, model, messages, tools, systemPrompt) {
-  const body = { model: model, messages: [{ role: "system", content: systemPrompt }, ...messages] };
+  const body = { model: model, messages: [{ role: "system", content: systemPrompt }, ...messages], temperature: 0 };
   
   if (tools && tools.length > 0) {
     body.tools = tools;
@@ -99,32 +99,26 @@ async function callAnthropicNative(apiKey, messages, tools, systemPrompt) {
 
 // ── AGENT TOOL DEFINITIONS ───────────────────────────────────────────
 const tools = [
-  { type: "function", function: { name: "read_gmail", description: "Check recent emails, inbox, or see who emailed.", parameters: { type: "object", properties: { filter: { type: "string" } } } } },
-  { type: "function", function: { name: "read_calendar", description: "Check upcoming meetings and schedule.", parameters: { type: "object", properties: { timeframe: { type: "string" } } } } },
-  { type: "function", function: { name: "read_tasks", description: "Fetch pending to-do list items.", parameters: { type: "object", properties: { status: { type: "string" } } } } },
-  { type: "function", function: { name: "create_task", description: "Add a new task or reminder.", parameters: { type: "object", properties: { title: { type: "string" }, notes: { type: "string" } }, required: ["title"] } } },
-  { type: "function", function: { name: "search_google_drive", description: "Search Google Drive to find a file's name, link, and ID.", parameters: { type: "object", properties: { searchQuery: { type: "string" } }, required: ["searchQuery"] } } },
-  { type: "function", function: { name: "read_google_doc", description: "Opens a Google Doc to read text. Requires fileId.", parameters: { type: "object", properties: { fileId: { type: "string" } }, required: ["fileId"] } } },
-  { type: "function", function: { name: "read_google_sheets", description: "Reads data from a Spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string" }, range: { type: "string" } }, required: ["spreadsheetId"] } } }
+  { type: "function", function: { name: "read_gmail", description: "Check recent emails.", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "read_calendar", description: "Check meetings.", parameters: { type: "object", properties: { timeframe: { type: "string" } } } } },
+  { type: "function", function: { name: "read_tasks", description: "Fetch tasks.", parameters: { type: "object", properties: { status: { type: "string" } } } } },
+  { type: "function", function: { name: "create_task", description: "Add task.", parameters: { type: "object", properties: { title: { type: "string" }, notes: { type: "string" } }, required: ["title"] } } },
+  { type: "function", function: { name: "search_google_drive", description: "Search Drive files.", parameters: { type: "object", properties: { searchQuery: { type: "string" } }, required: ["searchQuery"] } } },
+  { type: "function", function: { name: "read_google_doc", description: "Read doc text.", parameters: { type: "object", properties: { fileId: { type: "string" } }, required: ["fileId"] } } },
+  { type: "function", function: { name: "read_google_sheets", description: "Read sheets.", parameters: { type: "object", properties: { spreadsheetId: { type: "string" }, range: { type: "string" } }, required: ["spreadsheetId"] } } }
 ];
 
-// CRITICAL FIX: The Prompt is now extremely strict to prevent "yapping"
 const systemPrompt = `You are Mimo, an elite AI assistant connected to Google Workspace. 
 CRITICAL RULES:
-1. Be extremely concise and direct. 
-2. NEVER explain what tools you used. NEVER say "I found this information by checking your inbox" or "According to the tool". 
-3. Just provide the final answer directly to the user based on the context provided.
-4. If a user asks for a summary, give a clean, bulleted list.
-5. If using a tool, ONLY output the JSON tool call, absolutely no conversational text around it.`;
+1. Be extremely concise. 
+2. Never explain what tools you used. 
+3. Provide the final answer directly.
+4. If using a tool, ONLY output the JSON tool call, absolutely no conversational text around it.`;
 
 // ── EXPORTED CORE FUNCTIONS ──────────────────────────────────────────
 async function determineIntentAndAsk(question, history) {
-  const messages = [...history.slice(-4), { role: "user", content: question }];
-  const aiRes = await askUnifiedAI(messages, systemPrompt, tools);
-
-  if (aiRes.action === 'text') return { intent: 'ANSWER', answer: aiRes.text };
-
-  return { intent: 'SEARCH', toolCalls: aiRes.calls, rawMessage: aiRes.rawMessage, messages: messages };
+  const aiRes = await askUnifiedAI([...history.slice(-4), { role: "user", content: question }], systemPrompt, tools);
+  return aiRes.action === 'text' ? { intent: 'ANSWER', answer: aiRes.text } : { intent: 'SEARCH', toolCalls: aiRes.calls, rawMessage: aiRes.rawMessage, messages: [...history.slice(-4), { role: "user", content: question }] };
 }
 
 async function executeAgentSearch(intentData, googleAccessToken) {
@@ -133,50 +127,24 @@ async function executeAgentSearch(intentData, googleAccessToken) {
 
   const toolResults = await Promise.all(toolCalls.map(async (call) => {
     const { name, input, id } = call;
-    let resultData = '';
-
     try {
-      if (name === 'read_gmail') {
-        resultData = formatEmailsForContext(await getRecentEmails(googleAccessToken, 15));
-        sourcesUsed.push('Gmail');
-      } else if (name === 'read_calendar') {
-        resultData = formatEventsForContext(await getUpcomingEvents(googleAccessToken, 10));
-        sourcesUsed.push('Calendar');
-      } else if (name === 'read_tasks') {
-        resultData = formatTasksForContext(await getTasks(googleAccessToken, 15));
-        sourcesUsed.push('Tasks');
-      } else if (name === 'create_task') {
-        const newTask = await createTask(googleAccessToken, input.title, input.notes || '');
-        resultData = `System Confirmation: Task "${newTask.title}" created.`;
-        sourcesUsed.push('Tasks (Executed)');
-      } else if (name === 'search_google_drive') {
-        resultData = formatFilesForContext(await searchDriveFiles(googleAccessToken, input.searchQuery, 5));
-        sourcesUsed.push('Drive Search');
-      } else if (name === 'read_google_doc') {
-        resultData = `Document Content:\n\n${await readGoogleDoc(googleAccessToken, input.fileId)}`;
-        sourcesUsed.push('Google Docs');
-      } else if (name === 'read_google_sheets') {
-        resultData = formatSheetForContext(await readSheetRange(googleAccessToken, input.spreadsheetId, input.range || 'A1:Z50'));
-        sourcesUsed.push('Sheets');
-      }
-    } catch (err) {
-      console.error(`Tool error ${name}:`, err.message);
-      resultData = `Error executing tool: ${err.message}`;
-    }
-    return { id, name, resultData };
+      if (name === 'read_gmail') { sourcesUsed.push('Gmail'); return { id, name, resultData: formatEmailsForContext(await getRecentEmails(googleAccessToken, 15)) }; }
+      if (name === 'read_calendar') { sourcesUsed.push('Calendar'); return { id, name, resultData: formatEventsForContext(await getUpcomingEvents(googleAccessToken, 10)) }; }
+      if (name === 'read_tasks') { sourcesUsed.push('Tasks'); return { id, name, resultData: formatTasksForContext(await getTasks(googleAccessToken, 15)) }; }
+      if (name === 'create_task') { sourcesUsed.push('Tasks (Executed)'); const newTask = await createTask(googleAccessToken, input.title, input.notes || ''); return { id, name, resultData: `Success: Task "${newTask.title}" created.` }; }
+      if (name === 'search_google_drive') { sourcesUsed.push('Drive Search'); return { id, name, resultData: formatFilesForContext(await searchDriveFiles(googleAccessToken, input.searchQuery, 5)) }; }
+      if (name === 'read_google_doc') { sourcesUsed.push('Google Docs'); return { id, name, resultData: await readGoogleDoc(googleAccessToken, input.fileId) }; }
+      if (name === 'read_google_sheets') { sourcesUsed.push('Sheets'); return { id, name, resultData: formatSheetForContext(await readSheetRange(googleAccessToken, input.spreadsheetId, input.range)) }; }
+      return { id, name, resultData: "Unknown tool" };
+    } catch (err) { return { id, name, resultData: `Error: ${err.message}` }; }
   }));
 
-  messages.push(rawMessage);
-  for (const tr of toolResults) {
-    messages.push({ role: "tool", tool_call_id: tr.id, name: tr.name, content: tr.resultData });
-  }
+  const toolErrors = toolResults.filter(tr => tr.resultData.startsWith('Error'));
+  if (toolErrors.length > 0) return { answer: `I had trouble accessing your data. Please check if the ${toolErrors[0].name} tool is authorized.`, source: 'Error' };
 
-  const finalRes = await askUnifiedAI(messages, systemPrompt, null);
+  const finalRes = await askUnifiedAI([...messages, rawMessage, ...toolResults.map(tr => ({ role: "tool", tool_call_id: tr.id, name: tr.name, content: tr.resultData }))], systemPrompt, null);
 
-  return {
-    answer: finalRes.action === 'text' && finalRes.text.trim() ? finalRes.text : "I checked that for you, but didn't generate a text summary.",
-    source: [...new Set(sourcesUsed)].join(', ') || 'Mimo Agent'
-  };
+  return { answer: finalRes.text || "I checked that for you, but didn't generate a text summary.", source: [...new Set(sourcesUsed)].join(', ') || 'Mimo Agent' };
 }
 
 module.exports = { determineIntentAndAsk, executeAgentSearch };
