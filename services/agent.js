@@ -57,7 +57,7 @@ RULES:
 1. Be direct. 
 2. Never mention tools used. 
 3. Direct answers only. 
-4. If using a tool, output JSON ONLY; otherwise, speak normally.`;
+4. If using a tool, output straight to the point; no JSON, speak normally.`;
 
 // ── EXPORTED CORE FUNCTIONS ──────────────────────────────────────────
 async function determineIntentAndAsk(question, history) {
@@ -67,6 +67,23 @@ async function determineIntentAndAsk(question, history) {
 
 async function executeAgentSearch(intentData, googleAccessToken) {
   const { toolCalls, rawMessage, messages } = intentData;
+  const sourcesUsed = []; // Ensure this remains here!
+
+  const toolResults = await Promise.all(toolCalls.map(async (call) => {
+    try {
+      // Your validation logic for 'read_google_doc' goes here
+      if (call.name === 'read_google_doc') {
+        const docContent = await readGoogleDoc(googleAccessToken, call.input.fileId);
+        if (!docContent || docContent.length < 50) throw new Error("Could not read document content.");
+        sourcesUsed.push('Google Docs');
+        return { id: call.id, name: call.name, resultData: docContent };
+      }
+      // ... keep your other tool branches (Gmail, Calendar, etc.) exactly as they were!
+      return { id: call.id, name: call.name, resultData: "Tool result unavailable." };
+    } catch (err) { return { id: call.id, name: call.name, resultData: `Error: ${err.message}` }; }
+  }));
+
+  // ... remainder of your validation and finalRes call
   const sourcesUsed = [];
 
   const toolResults = await Promise.all(toolCalls.map(async (call) => {
