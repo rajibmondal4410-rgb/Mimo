@@ -49,10 +49,14 @@ async function askUnifiedAI(messages, systemPrompt, tools) {
 async function callOpenAICompatible(url, apiKey, model, messages, tools, systemPrompt) {
   const body = {
     model: model,
-    messages: [{ role: "system", content: systemPrompt }, ...messages],
-    tools: tools,
-    tool_choice: "auto"
+    messages: [{ role: "system", content: systemPrompt }, ...messages]
   };
+
+  // ONLY attach tools if they are provided. This forces the AI to output text on the final pass.
+  if (tools && tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
 
   const res = await fetch(url, {
     method: 'POST',
@@ -84,10 +88,6 @@ async function callAnthropicNative(apiKey, messages, tools, systemPrompt) {
   const { Anthropic } = require('@anthropic-ai/sdk');
   const anthropic = new Anthropic({ apiKey });
 
-  const anthropicTools = tools.map(t => ({
-    name: t.function.name, description: t.function.description, input_schema: t.function.parameters
-  }));
-
   const anthropicMessages = [];
   for (const m of messages) {
     if (m.role === 'user') anthropicMessages.push({ role: 'user', content: m.content });
@@ -103,9 +103,17 @@ async function callAnthropicNative(apiKey, messages, tools, systemPrompt) {
     }
   }
 
-  const response = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022", max_tokens: 1024, system: systemPrompt, tools: anthropicTools, messages: anthropicMessages
-  });
+  const options = {
+    model: "claude-3-5-sonnet-20241022", max_tokens: 1024, system: systemPrompt, messages: anthropicMessages
+  };
+
+  if (tools && tools.length > 0) {
+    options.tools = tools.map(t => ({
+      name: t.function.name, description: t.function.description, input_schema: t.function.parameters
+    }));
+  }
+
+  const response = await anthropic.messages.create(options);
 
   const toolCalls = response.content.filter(block => block.type === 'tool_use');
   if (toolCalls.length > 0) {
@@ -141,7 +149,7 @@ router.post('/', authMiddleware, async (req, res) => {
       { type: "function", function: { name: "read_google_sheets", description: "Reads data from a Spreadsheet.", parameters: { type: "object", properties: { spreadsheetId: { type: "string" }, range: { type: "string" } }, required: ["spreadsheetId"] } } }
     ];
 
-    const systemPrompt = "You are Mimo, a highly capable AI assistant connected to Google Workspace. You have tools to search files, read documents, spreadsheets, and check emails/tasks. If asked about a document's info, use 'search_google_drive' to get the fileId, then 'read_google_doc' to answer. Provide exact answers, explicitly stating where you found them (e.g., 'According to the Q3 Project Doc...').";
+    const systemPrompt = "You are Mimo, a highly capable AI assistant connected to Google Workspace. You have tools to search files, read documents, spreadsheets, and check emails/tasks. If asked about a document's info, use 'search_google_drive' to get the fileId, then 'read_google_doc' to answer. Provide exact answers, explicitly stating where you found them. IMPORTANT: After using tools, you MUST provide a conversational text answer to the user.";
 
     const messages = [...history.slice(-4), { role: "user", content: question }];
 
@@ -195,10 +203,11 @@ router.post('/', authMiddleware, async (req, res) => {
       messages.push({ role: "tool", tool_call_id: tr.id, name: tr.name, content: tr.resultData });
     }
 
-    const finalRes = await askUnifiedAI(messages, systemPrompt, tools);
+    // CRITICAL FIX: Pass 'null' for tools here so the AI is forced to answer with text
+    const finalRes = await askUnifiedAI(messages, systemPrompt, null);
 
     res.json({ 
-      answer: finalRes.action === 'text' ? finalRes.text : "Search complete.", 
+      answer: finalRes.action === 'text' && finalRes.text.trim() ? finalRes.text : "I checked that for you, but didn't generate a text summary.", 
       source: [...new Set(sourcesUsed)].join(', ') || 'Mimo Agent' 
     });
 
