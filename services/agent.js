@@ -67,24 +67,7 @@ async function determineIntentAndAsk(question, history) {
 
 async function executeAgentSearch(intentData, googleAccessToken) {
   const { toolCalls, rawMessage, messages } = intentData;
-  const sourcesUsed = []; // Ensure this remains here!
-
-  const toolResults = await Promise.all(toolCalls.map(async (call) => {
-    try {
-      // Your validation logic for 'read_google_doc' goes here
-      if (call.name === 'read_google_doc') {
-        const docContent = await readGoogleDoc(googleAccessToken, call.input.fileId);
-        if (!docContent || docContent.length < 50) throw new Error("Could not read document content.");
-        sourcesUsed.push('Google Docs');
-        return { id: call.id, name: call.name, resultData: docContent };
-      }
-      // ... keep your other tool branches (Gmail, Calendar, etc.) exactly as they were!
-      return { id: call.id, name: call.name, resultData: "Tool result unavailable." };
-    } catch (err) { return { id: call.id, name: call.name, resultData: `Error: ${err.message}` }; }
-  }));
-
-  // ... remainder of your validation and finalRes call
-  const sourcesUsed = [];
+  const sourcesUsed = []; 
 
   const toolResults = await Promise.all(toolCalls.map(async (call) => {
     const { name, input, id } = call;
@@ -94,8 +77,17 @@ async function executeAgentSearch(intentData, googleAccessToken) {
       if (name === 'read_tasks') { sourcesUsed.push('Tasks'); return { id, name, resultData: formatTasksForContext(await getTasks(googleAccessToken, 15)) }; }
       if (name === 'create_task') { sourcesUsed.push('Tasks'); const newTask = await createTask(googleAccessToken, input.title, input.notes || ''); return { id, name, resultData: `Success: Task "${newTask.title}" created.` }; }
       if (name === 'search_google_drive') { sourcesUsed.push('Drive Search'); return { id, name, resultData: formatFilesForContext(await searchDriveFiles(googleAccessToken, input.searchQuery, 5)) }; }
-      if (name === 'read_google_doc') { sourcesUsed.push('Google Docs'); return { id, name, resultData: await readGoogleDoc(googleAccessToken, input.fileId) }; }
+      
+      // Merged Document Validation Logic
+      if (name === 'read_google_doc') { 
+        sourcesUsed.push('Google Docs'); 
+        const docContent = await readGoogleDoc(googleAccessToken, input.fileId);
+        if (!docContent || docContent.length < 50) throw new Error("Could not read document content. The file might be empty or inaccessible.");
+        return { id, name, resultData: docContent }; 
+      }
+      
       if (name === 'read_google_sheets') { sourcesUsed.push('Sheets'); return { id, name, resultData: formatSheetForContext(await readSheetRange(googleAccessToken, input.spreadsheetId, input.range)) }; }
+      
       return { id, name, resultData: "Unknown tool" };
     } catch (err) { return { id, name, resultData: `Error: ${err.message}` }; }
   }));

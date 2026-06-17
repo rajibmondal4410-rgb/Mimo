@@ -83,15 +83,14 @@ async function getRecentEmails(accessToken, maxResults = 15) {
  * Formats emails into a clean text block for the AI.
  */
 function formatEmailsForContext(emails) {
-  if (!emails.length) return 'No emails found in inbox.';
+  if (!emails.length) return 'No emails found.';
 
   return emails.map((e, i) =>
     `Email ${i + 1}:
   From:    ${e.from}
   Subject: ${e.subject}
   Date:    ${e.date}
-  Read:    ${e.isRead ? 'Yes' : 'No (unread)'}
-  Content: ${e.body.substring(0, 800)}...` // Send up to 800 chars of the actual body
+  Content: ${e.body || e.snippet}` // Use e.body if available, fallback to snippet
   ).join('\n\n');
 }
 
