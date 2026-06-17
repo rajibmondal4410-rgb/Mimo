@@ -29,9 +29,9 @@ app.use(express.json());
 app.use('/auth', require('./routes/auth'));
 app.use('/ask',  require('./routes/ask'));
 
-// Health check — useful to verify deploy is alive
+// Health check — useful to verify deploy is alive and for cron jobs
 app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'mimo-backend', version: '0.1.0' });
+  res.json({ ok: true, service: 'mimo-backend', version: '0.1.1' });
 });
 
 // ── 404 handler ────────────────────────────────────────
@@ -45,8 +45,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ── Start Server ───────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n✅  Mimo backend running on http://127.0.0.1:${PORT}`);
-  console.log(`    Health: http://127.0.0.1:${PORT}/health\n`);
+
+// Removed '127.0.0.1' so Render can properly route traffic
+app.listen(PORT, () => {
+  console.log(`\n✅  Mimo backend running on port ${PORT}`);
+  console.log(`    Health: /health\n`);
 });
