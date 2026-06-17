@@ -46,8 +46,7 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-// Change your app.listen block to this:
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`\n✅  Mimo backend running on http://127.0.0.1:${PORT}`);
   console.log(`    Health: http://127.0.0.1:${PORT}/health\n`);
 });
