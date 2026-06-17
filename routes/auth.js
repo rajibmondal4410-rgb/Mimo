@@ -17,11 +17,16 @@ router.get('/google', (req, res) => {
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',   // required to get a refresh_token
     prompt:      'consent',   // forces Google to issue refresh_token every time
+    
     scope: [
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
-      'https://www.googleapis.com/auth/gmail.readonly',
-    ],
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/tasks',
+],
   });
   res.redirect(url);
 });
