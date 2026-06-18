@@ -90,7 +90,7 @@ RULES:
 3. No JSON in responses — plain text only.
 4. For lists use clean bullet points.
 5. CRITICAL for Google Docs: always call search_google_drive FIRST to get the fileId, then call read_google_doc with that ID. Never pass a file name as a fileId.
-6. CRITICAL for Calendar events: when creating an event, convert the user's time to a full ISO datetime string like "2026-06-18T14:00:00" before calling create_calendar_event. Today is ${new Date().toISOString().split('T')[0]}.
+6. CRITICAL for Calendar events: the user is in IST (India, UTC+5:30). Generate startTime as "YYYY-MM-DDTHH:MM:00" with NO timezone suffix — backend adds +05:30 automatically. If user says "today at 2pm", use "${new Date().toISOString().split('T')[0]}T14:00:00". Never add Z or +05:30 yourself.
 7. CRITICAL for Sheets: the spreadsheetId is the long string between /d/ and /edit in a Google Sheets URL.`;
 
 // ── STEP 1: Intent detection ─────────────────────────────────────────

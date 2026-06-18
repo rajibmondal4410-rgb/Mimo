@@ -24,22 +24,50 @@ async function getUpcomingEvents(accessToken, maxResults = 10) {
   }));
 }
 
-async function createCalendarEvent(accessToken, title, startTime, endTime, description = '') {
+/**
+ * Converts a naive datetime string like "2026-06-18T14:00:00"
+ * into a proper IST-aware ISO string "2026-06-18T14:00:00+05:30"
+ * so Google Calendar stores it correctly as 2 PM IST, not 2 PM UTC.
+ */
+function toIST(datetimeStr) {
+  // If the string already has a timezone offset or Z, use as-is
+  if (datetimeStr.endsWith('Z') || datetimeStr.includes('+') || datetimeStr.includes('-', 10)) {
+    return datetimeStr;
+  }
+  // Append IST offset (+05:30)
+  return datetimeStr + '+05:30';
+}
+
+async function createCalendarEvent(accessToken, title, startTime, endTime = null, description = '') {
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken });
   const calendar = google.calendar({ version: 'v3', auth });
 
-  // Parse natural time like "today at 2pm" into ISO strings
-  const start = new Date(startTime);
-  const end   = endTime ? new Date(endTime) : new Date(start.getTime() + 60 * 60 * 1000); // default 1hr
+  const startIST = toIST(startTime);
+
+  let endIST;
+  if (endTime) {
+    endIST = toIST(endTime);
+  } else {
+    // Default: 1 hour after start
+    const startDate = new Date(startIST);
+    const endDate   = new Date(startDate.getTime() + 60 * 60 * 1000);
+    // Keep the +05:30 offset
+    endIST = endDate.toISOString().replace('Z', '+05:30');
+    // Recalculate properly: add 1hr to the IST time string directly
+    const [datePart, timePart] = startIST.split('T');
+    const [h, m, s]            = timePart.replace('+05:30', '').split(':').map(Number);
+    const newH                 = String(h + 1).padStart(2, '0');
+    endIST                     = `${datePart}T${newH}:${String(m).padStart(2,'0')}:${String(s||0).padStart(2,'0')}+05:30`;
+  }
 
   const res = await calendar.events.insert({
     calendarId:  'primary',
     requestBody: {
       summary:     title,
       description,
-      start: { dateTime: start.toISOString(), timeZone: 'Asia/Kolkata' },
-      end:   { dateTime: end.toISOString(),   timeZone: 'Asia/Kolkata' },
+      start: { dateTime: startIST, timeZone: 'Asia/Kolkata' },
+      end:   { dateTime: endIST,   timeZone: 'Asia/Kolkata' },
     },
   });
 
