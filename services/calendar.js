@@ -1,17 +1,8 @@
 const { google } = require('googleapis');
 
-/**
- * Fetches upcoming events from Google Calendar.
- * Returns clean objects — no raw Calendar API mess exposed to the rest of the app.
- *
- * @param {string} accessToken  — Google access token from JWT
- * @param {number} maxResults   — how many events to fetch (default 10)
- * @returns {Array} clean event objects
- */
 async function getUpcomingEvents(accessToken, maxResults = 10) {
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken });
-
   const calendar = google.calendar({ version: 'v3', auth });
 
   const res = await calendar.events.list({
@@ -22,9 +13,7 @@ async function getUpcomingEvents(accessToken, maxResults = 10) {
     orderBy:      'startTime',
   });
 
-  const events = res.data.items || [];
-
-  return events.map(e => ({
+  return (res.data.items || []).map(e => ({
     id:          e.id,
     title:       e.summary || '(No title)',
     start:       e.start?.dateTime || e.start?.date || '',
@@ -35,10 +24,34 @@ async function getUpcomingEvents(accessToken, maxResults = 10) {
   }));
 }
 
-/**
- * Formats events into a clean text block for Claude.
- * Claude reads this as context before answering.
- */
+async function createCalendarEvent(accessToken, title, startTime, endTime, description = '') {
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  // Parse natural time like "today at 2pm" into ISO strings
+  const start = new Date(startTime);
+  const end   = endTime ? new Date(endTime) : new Date(start.getTime() + 60 * 60 * 1000); // default 1hr
+
+  const res = await calendar.events.insert({
+    calendarId:  'primary',
+    requestBody: {
+      summary:     title,
+      description,
+      start: { dateTime: start.toISOString(), timeZone: 'Asia/Kolkata' },
+      end:   { dateTime: end.toISOString(),   timeZone: 'Asia/Kolkata' },
+    },
+  });
+
+  return {
+    id:    res.data.id,
+    title: res.data.summary,
+    start: res.data.start?.dateTime,
+    end:   res.data.end?.dateTime,
+    link:  res.data.htmlLink,
+  };
+}
+
 function formatEventsForContext(events) {
   if (!events.length) return 'No upcoming events found.';
 
@@ -52,4 +65,4 @@ function formatEventsForContext(events) {
   ).join('\n\n');
 }
 
-module.exports = { getUpcomingEvents, formatEventsForContext };
+module.exports = { getUpcomingEvents, createCalendarEvent, formatEventsForContext };
