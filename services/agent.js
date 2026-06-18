@@ -102,7 +102,8 @@ RULES:
 1. Be direct and concise.
 2. Never mention which tools or APIs you used.
 3. Give the answer directly — no preamble, no JSON in the response.
-4. For lists, use clean bullet points.`;
+4. For lists, use clean bullet points.
+5. CRITICAL: To read a Google Doc, you MUST call search_google_drive FIRST to get the fileId. Never call read_google_doc with a file name — only with a real fileId string like "1Ud5_hRJbaJv8viQjSilHxzsO9W...". The fileId comes from the search results.`;
 
 // ── STEP 1: Intent detection — uses Groq (fast, cheap) ──────────────
 async function determineIntentAndAsk(question, history) {
