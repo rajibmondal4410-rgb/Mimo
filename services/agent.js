@@ -7,8 +7,6 @@ const { getTasks, createTask, formatTasksForContext } = require('./tasks');
 
 // ─────────────────────────────────────────────────────────────────────
 // PROVIDER HELPERS
-// Groq  → fast, small context  → Gmail / Calendar / Tasks / Sheets
-// Gemini → huge context (1M)   → Drive / Docs
 // ─────────────────────────────────────────────────────────────────────
 
 async function callGroq(messages, systemPrompt, tools) {
@@ -62,6 +60,7 @@ async function callGemini(messages, systemPrompt, tools) {
   return { action: 'text', text: msg.content || '' };
 }
 
+// Try Groq first, then Gemini
 async function askAny(messages, systemPrompt, tools) {
   const errors = [];
   for (const fn of [callGroq, callGemini]) {
@@ -69,6 +68,16 @@ async function askAny(messages, systemPrompt, tools) {
     catch (e) { errors.push(e.message); }
   }
   throw new Error(`All providers failed: ${errors.join(' | ')}`);
+}
+
+// Final synthesis — tries Groq first (no quota issues), Gemini fallback
+async function synthesise(finalMessages, systemPrompt) {
+  const errors = [];
+  for (const fn of [callGroq, callGemini]) {
+    try { return await fn(finalMessages, systemPrompt, null); }
+    catch (e) { errors.push(e.message); }
+  }
+  throw new Error(`Synthesis failed: ${errors.join(' | ')}`);
 }
 
 // ── AGENT TOOL DEFINITIONS ───────────────────────────────────────────
@@ -85,8 +94,8 @@ const tools = [
       description: 'Create a new event on Google Calendar.',
       parameters: { type: 'object', properties: {
         title:       { type: 'string', description: 'Event title' },
-        startTime:   { type: 'string', description: 'Naive local datetime, NO timezone suffix. e.g. "2026-06-18T14:00:00"' },
-        endTime:     { type: 'string', description: 'Naive local datetime, NO timezone suffix. Optional, defaults to 1hr after start.' },
+        startTime:   { type: 'string', description: 'Naive local datetime, NO timezone suffix. e.g. "2026-06-20T14:00:00"' },
+        endTime:     { type: 'string', description: 'Naive local datetime, NO timezone suffix. Optional.' },
         description: { type: 'string', description: 'Optional notes.' }
       }, required: ['title', 'startTime'] } } },
 
@@ -102,28 +111,29 @@ const tools = [
       }, required: ['title'] } } },
 
   { type: 'function', function: { name: 'list_drive_files',
-      description: 'List ALL files in the user\'s Google Drive. Use this when the user asks "what files do I have", "show my drive", or "list my documents".',
+      description: 'List ALL files in the user\'s Google Drive. Use when user asks "what files do I have", "show my drive", "list my documents".',
       parameters: { type: 'object', properties: {
-        maxResults: { type: 'number', description: 'How many files to list. Default 50.' }
+        maxResults: { type: 'number', description: 'How many files. Default 50.' }
       } } } },
 
   { type: 'function', function: { name: 'search_google_drive',
-      description: 'Search Drive for a specific file by name or keyword. Use short keywords (2-4 words max). Use this when user asks about a specific file.',
+      description: 'Search Drive for a specific file by name or keyword. Use short keywords only (2-4 words).',
       parameters: { type: 'object', properties: {
         searchQuery: { type: 'string', description: 'Short keyword e.g. "Startup Business" not the full title' }
       }, required: ['searchQuery'] } } },
 
   { type: 'function', function: { name: 'read_google_doc',
-      description: 'Read the full text content of a Google Doc. ALWAYS call search_google_drive or list_drive_files first to get the fileId. Never pass a file name — only a real fileId string like "1Ud5_hRJbaJv8...".',
+      description: 'Read the full text content of a Google Doc. ALWAYS call search_google_drive first to get the fileId. Never pass a file name — only a real fileId.',
       parameters: { type: 'object', properties: {
-        fileId: { type: 'string', description: 'The Google Drive file ID from search results.' }
+        fileId: { type: 'string', description: 'The Google Drive file ID from search results e.g. "1Ud5_hRJbaJv8..."' }
       }, required: ['fileId'] } } },
 
   { type: 'function', function: { name: 'read_google_sheets',
-      description: 'Read data from a Google Spreadsheet.',
+      description: 'Read data from a Google Spreadsheet. When user asks about specific data in a sheet, use a targeted range.',
       parameters: { type: 'object', properties: {
-        spreadsheetId: { type: 'string', description: 'Only the ID between /d/ and /edit in the URL. e.g. "1DJU9RAxvm-C3B4r1LG3n6ny38kai"' },
-        range:         { type: 'string', description: 'Cell range e.g. A1:Z100.' }
+        spreadsheetId: { type: 'string', description: 'ONLY the ID between /d/ and /edit in the URL.' },
+        range:         { type: 'string', description: 'Cell range. Use A1:Z200 to get more rows. Default A1:Z100.' },
+        sheetName:     { type: 'string', description: 'Optional sheet/tab name e.g. "SAMPLE 1"' }
       }, required: ['spreadsheetId'] } } }
 ];
 
@@ -133,10 +143,11 @@ RULES:
 2. Never mention which tools or APIs you used.
 3. No JSON in responses — plain text only.
 4. For lists use clean bullet points.
-5. CRITICAL — Google Docs: call search_google_drive or list_drive_files FIRST to get the fileId. Then call read_google_doc with that fileId. Never pass a file name as a fileId.
-6. CRITICAL — Calendar: generate startTime as a naive local datetime with NO timezone suffix e.g. "2026-06-20T14:00:00". Never add Z or +05:30.
-7. CRITICAL — Sheets: spreadsheetId is ONLY the string between /d/ and /edit in the URL.
-8. CRITICAL — Drive listing: when user asks to list or show all files, use list_drive_files. When searching for a specific file, use search_google_drive with short keywords.`;
+5. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId. Never pass a file name as a fileId. If you cannot find a doc, say so — do NOT guess or invent content.
+6. CRITICAL — Sheets: when user asks for specific data (like a person's email), read the full sheet with range A1:Z200 and look carefully at ALL columns. Match the exact row for that person then return the exact cell value. Never guess or invent data.
+7. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
+8. CRITICAL — Sheets ID: extract ONLY the string between /d/ and /edit from the URL. Never pass the full URL.
+9. If you cannot find data or a tool returns no results, say "I couldn't find that" — never make up an answer.`;
 
 // ── STEP 1: Intent detection ─────────────────────────────────────────
 async function determineIntentAndAsk(question, history, timezone = 'Asia/Kolkata') {
@@ -150,7 +161,6 @@ async function determineIntentAndAsk(question, history, timezone = 'Asia/Kolkata
 async function executeAgentSearch(intentData, googleAccessToken, timezone = 'Asia/Kolkata') {
   const { toolCalls, rawMessage, messages } = intentData;
   const sourcesUsed = [];
-  let usedLargeContext = false;
 
   const toolResults = await Promise.all(toolCalls.map(async (call) => {
     const { name, input, id } = call;
@@ -194,17 +204,27 @@ async function executeAgentSearch(intentData, googleAccessToken, timezone = 'Asi
 
       if (name === 'read_google_sheets') {
         sourcesUsed.push('Sheets');
+        // Always extract ID in case full URL was passed
         const rawId = (input.spreadsheetId || '').trim();
         const match = rawId.match(/\/d\/([\w-]+)/);
         const spreadsheetId = match ? match[1] : rawId;
-        console.log(`[Sheets] ID resolved: "${rawId}" → "${spreadsheetId}"`);
-        return { id, name, resultData: formatSheetForContext(await readSheetRange(googleAccessToken, spreadsheetId, input.range || 'A1:Z100')) };
+
+        // Build range — include sheet name if provided
+        let range = input.range || 'A1:Z200';
+        if (input.sheetName) {
+          range = `'${input.sheetName}'!${range}`;
+        }
+
+        console.log(`[Sheets] ID: "${spreadsheetId}", Range: "${range}"`);
+        const rows = await readSheetRange(googleAccessToken, spreadsheetId, range);
+
+        // For large sheets, send structured data so AI can find exact values
+        const formatted = formatSheetForContext(rows);
+        return { id, name, resultData: formatted };
       }
 
-      // ── Large-context tools → Gemini synthesises ─────────────────
       if (name === 'list_drive_files') {
         sourcesUsed.push('Drive');
-        usedLargeContext = true;
         const max = input.maxResults || 50;
         const files = await listAllDriveFiles(googleAccessToken, max);
         return { id, name, resultData: formatFilesForContext(files) };
@@ -212,20 +232,21 @@ async function executeAgentSearch(intentData, googleAccessToken, timezone = 'Asi
 
       if (name === 'search_google_drive') {
         sourcesUsed.push('Drive');
-        usedLargeContext = true;
         return { id, name, resultData: formatFilesForContext(await searchDriveFiles(googleAccessToken, input.searchQuery, 20)) };
       }
 
       if (name === 'read_google_doc') {
         sourcesUsed.push('Google Docs');
-        usedLargeContext = true;
         const docContent = await readGoogleDoc(googleAccessToken, input.fileId);
         if (!docContent || docContent.length < 10) throw new Error('Document is empty or inaccessible.');
-        return { id, name, resultData: docContent.substring(0, 80000) };
+        // Truncate to 6000 chars so Groq can handle it within its token limit
+        const truncated = docContent.substring(0, 6000);
+        return { id, name, resultData: truncated };
       }
 
       return { id, name, resultData: 'Unknown tool' };
     } catch (err) {
+      console.error(`[Tool error] ${name}:`, err.message);
       return { id, name, resultData: `Error: ${err.message}` };
     }
   }));
@@ -236,35 +257,29 @@ async function executeAgentSearch(intentData, googleAccessToken, timezone = 'Asi
     return { answer: `I had trouble accessing your data: ${toolErrors[0].resultData}`, source: 'Error' };
   }
 
-  // ── Final synthesis ──────────────────────────────────────────────
+  // ── Final synthesis — Groq first, no Gemini dependency ──────────
   const finalMessages = [
     ...messages,
     rawMessage,
     ...toolResults.map(tr => ({ role: 'tool', tool_call_id: tr.id, name: tr.name, content: tr.resultData }))
   ];
 
-  let finalRes;
-  if (usedLargeContext) {
-    try {
-      finalRes = await callGemini(finalMessages, systemPrompt, null);
-    } catch (e) {
-      console.warn('Gemini synthesis failed, falling back to Groq:', e.message);
-      const truncatedMessages = finalMessages.map(m => {
-        if (m.role === 'tool' && m.content && m.content.length > 3000) {
-          return { ...m, content: m.content.substring(0, 3000) + '\n...[truncated]' };
-        }
-        return m;
-      });
-      finalRes = await callGroq(truncatedMessages, systemPrompt, null);
-    }
-  } else {
-    try {
-      finalRes = await callGroq(finalMessages, systemPrompt, null);
-    } catch (e) {
-      console.warn('Groq synthesis failed, falling back to Gemini:', e.message);
-      finalRes = await callGemini(finalMessages, systemPrompt, null);
-    }
+  // Check total content size — if too large for Groq, truncate tool results
+  const totalChars = finalMessages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  let messagesToSend = finalMessages;
+
+  if (totalChars > 20000) {
+    // Truncate tool results to fit Groq's context
+    messagesToSend = finalMessages.map(m => {
+      if (m.role === 'tool' && m.content && m.content.length > 4000) {
+        return { ...m, content: m.content.substring(0, 4000) + '\n...[content truncated to fit context]' };
+      }
+      return m;
+    });
+    console.log(`[Agent] Content truncated from ${totalChars} chars for Groq`);
   }
+
+  const finalRes = await synthesise(messagesToSend, systemPrompt);
 
   return {
     answer: finalRes.text || 'Done.',
