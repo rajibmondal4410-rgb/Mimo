@@ -2,11 +2,10 @@ const express = require('express');
 const router  = express.Router();
 const authMiddleware = require('../middleware/auth');
 
-// Import the execution engine from our new agent file
 const { determineIntentAndAsk, executeAgentSearch } = require('../services/agent');
 
 router.post('/', authMiddleware, async (req, res) => {
-  const { question, history = [] } = req.body;
+  const { question, history = [], timezone = 'Asia/Kolkata' } = req.body;
   const { googleAccessToken } = req.user;
 
   if (!question || !question.trim()) {
@@ -18,26 +17,15 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 
   try {
-    // ── STEP 1: SPECIFY INTENT ───────────────────────────────────────
-    // The AI decides if it can just talk, or if it needs to execute tools
-    const intentData = await determineIntentAndAsk(question, history);
+    const intentData = await determineIntentAndAsk(question, history, timezone);
 
-    // ── STEP 2: ACT ON INTENT ────────────────────────────────────────
     if (intentData.intent === 'ANSWER') {
-      // General Chat — No searching needed
-      return res.json({ 
-        answer: intentData.answer, 
-        source: 'General' 
-      });
+      return res.json({ answer: intentData.answer, source: 'General' });
     }
 
     if (intentData.intent === 'SEARCH') {
-      // Tool required — Pass to the Execution Engine
-      const finalResult = await executeAgentSearch(intentData, googleAccessToken);
-      return res.json({ 
-        answer: finalResult.answer, 
-        source: finalResult.source 
-      });
+      const finalResult = await executeAgentSearch(intentData, googleAccessToken, timezone);
+      return res.json({ answer: finalResult.answer, source: finalResult.source });
     }
 
   } catch (err) {
