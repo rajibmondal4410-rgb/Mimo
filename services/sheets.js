@@ -1,17 +1,8 @@
 const { google } = require('googleapis');
 
-/**
- * Reads cell values from a Google Sheet range.
- *
- * @param {string} accessToken
- * @param {string} spreadsheetId — found in the sheet's URL
- * @param {string} range        — e.g. 'Sheet1!A1:Z100' (default reads first 100 rows)
- * @returns {Array<Array<string>>} raw 2D array of cell values, first row = header
- */
-async function readSheetRange(accessToken, spreadsheetId, range = 'A1:Z100') {
+async function readSheetRange(accessToken, spreadsheetId, range = 'A1:Z200') {
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken });
-
   const sheets = google.sheets({ version: 'v4', auth });
 
   const res = await sheets.spreadsheets.values.get({
@@ -22,18 +13,9 @@ async function readSheetRange(accessToken, spreadsheetId, range = 'A1:Z100') {
   return res.data.values || [];
 }
 
-/**
- * Fetches basic metadata (title + sheet/tab names) for a spreadsheet.
- * Useful when the AI needs to know what tabs exist before picking a range.
- *
- * @param {string} accessToken
- * @param {string} spreadsheetId
- * @returns {object} { title, sheetNames }
- */
 async function getSpreadsheetMeta(accessToken, spreadsheetId) {
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken });
-
   const sheets = google.sheets({ version: 'v4', auth });
 
   const res = await sheets.spreadsheets.get({ spreadsheetId });
@@ -45,20 +27,31 @@ async function getSpreadsheetMeta(accessToken, spreadsheetId) {
 }
 
 /**
- * Formats a 2D sheet array into a clean text block for Claude.
- * Assumes the first row is the header row.
+ * Formats sheet data so every row is mapped to its exact header columns.
+ * This prevents the AI from mixing up columns when looking for specific values.
+ * Each row is rendered as: "Row N: ColumnName: value, ColumnName: value, ..."
  */
 function formatSheetForContext(rows, sheetName = 'Sheet') {
-  if (!rows.length) return `No data found in ${sheetName}.`;
+  if (!rows || !rows.length) return `No data found in ${sheetName}.`;
 
   const [header, ...body] = rows;
 
+  if (!body.length) return `Sheet has headers but no data rows.`;
+
   const lines = body.map((row, i) => {
-    const cells = header.map((h, idx) => `${h}: ${row[idx] ?? ''}`).join(', ');
-    return `Row ${i + 1}: ${cells}`;
+    // Map each cell to its exact header name — skip empty cells
+    const cells = header
+      .map((h, idx) => {
+        const val = row[idx];
+        if (!val || val.toString().trim() === '') return null;
+        return `${h}: ${val}`;
+      })
+      .filter(Boolean)
+      .join(' | ');
+    return `Row ${i + 2}: ${cells}`;
   });
 
-  return `Data from ${sheetName}:\n\n${lines.join('\n')}`;
+  return `Data from ${sheetName} (${body.length} rows):\nHeaders: ${header.join(' | ')}\n\n${lines.join('\n')}`;
 }
 
 module.exports = { readSheetRange, getSpreadsheetMeta, formatSheetForContext };
