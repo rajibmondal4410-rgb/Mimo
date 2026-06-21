@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/rajibmondal4410-rgb/Mimo/blob/main/assets/logo.png" width="120" alt="Mimo logo"/>
+<img src="https://raw.githubusercontent.com/rajibmondal4410-rgb/Mimo/main/logo.png" width="120" alt="Mimo logo"/>
 
 # Mimo
 
