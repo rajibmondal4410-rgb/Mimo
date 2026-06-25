@@ -53,32 +53,74 @@ def extract_attachments(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     return attachments
 
 
-async def get_recent_emails(access_token: str, max_results: int = 10, date_filter: str = None) -> List[Dict[str, Any]]:
+async def get_recent_emails(
+    access_token: str,
+    max_results: int = 10,
+    date_filter: str = None   # e.g. "today", "2026/06/25", or None for latest
+) -> List[Dict[str, Any]]:
+    """
+    Fetches emails with optional date filtering.
+    date_filter="today"  → only today's emails
+    date_filter=None     → latest N emails regardless of date
+    """
     creds = Credentials(token=access_token)
+
     def fetch_sync() -> List[Dict[str, Any]]:
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-        
-        # Build strict query
-        q = "in:inbox -category:promotions -category:social -category:updates -category:forums"
+
+        # Build query
+        base_q = "in:inbox -category:promotions -category:social -category:updates -category:forums"
         if date_filter == "today":
             today = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-            q += f" after:{today}"
-            
-        results = service.users().messages().list(userId="me", maxResults=max_results, q=q).execute()
-        messages = results.get("messages", [])
-        
-        parsed = []
-        for m in messages:
-            msg = service.users().messages().get(userId="me", id=m["id"], format="full").execute()
-            headers = {h['name'].lower(): h['value'] for h in msg.get("payload", {}).get("headers", [])}
-            parsed.append({
-                "from": headers.get("from", "Unknown"),
-                "subject": headers.get("subject", "No Subject"),
-                "body": (extract_email_body(msg.get("payload", {})) or msg.get("snippet", ""))[:500],
-                "date": headers.get("date", "")
-            })
-        return parsed
+            query = f"{base_q} after:{today}"
+        elif date_filter and date_filter != "today":
+            query = f"{base_q} after:{date_filter}"
+        else:
+            query = base_q
+
+        list_res = service.users().messages().list(
+            userId="me",
+            maxResults=max_results,
+            q=query,
+            labelIds=["INBOX"]
+        ).execute()
+
+        messages = list_res.get("messages", [])
+        parsed_results = []
+
+        for msg_meta in messages:
+            try:
+                msg = service.users().messages().get(
+                    userId="me", id=msg_meta["id"], format="full"
+                ).execute()
+
+                headers = {
+                    h["name"].lower(): h["value"]
+                    for h in msg.get("payload", {}).get("headers", [])
+                }
+
+                body_text = extract_email_body(msg.get("payload", {}))
+                attachments = extract_attachments(msg.get("payload", {}))
+
+                parsed_results.append({
+                    "id": msg["id"],
+                    "from": headers.get("from", ""),
+                    "to": headers.get("to", ""),
+                    "subject": headers.get("subject", "No subject"),
+                    "date": headers.get("date", ""),
+                    "snippet": msg.get("snippet", ""),
+                    "isRead": "UNREAD" not in msg.get("labelIds", []),
+                    "body": body_text,
+                    "attachments": attachments,
+                })
+            except Exception as e:
+                print(f"Skipped email {msg_meta['id']}: {e}")
+                continue
+
+        return parsed_results
+
     return await asyncio.to_thread(fetch_sync)
+
 
 def format_emails_for_context(emails: List[Dict[str, Any]]) -> str:
     """Formats emails into a clean block for the LLM."""
