@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from routers import mail
 
 # Load environment variables from .env file
 load_dotenv()
@@ -41,6 +42,7 @@ from routers import auth, ask
 
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(ask.router, prefix="/ask", tags=["Ask"])
+app.include_router(mail.router)
 
 # Health check — useful to verify deploy is alive and for cron jobs
 @app.get("/health")
