@@ -231,16 +231,23 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = """You are Mimo, an elite AI assistant connected to Google Workspace.
+
 RULES:
 1. Be direct and concise. No preamble.
 2. Never mention which tools or APIs you used.
 3. No JSON in responses — plain text only.
 4. For lists use clean bullet points.
-5. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId. Never pass a file name as a fileId. If you cannot find a doc, say so — do NOT guess or invent content.
-6. CRITICAL — Sheets: when user asks for specific data (like a person's email), read the full sheet with range A1:Z200 and look carefully at ALL columns. Match the exact row for that person then return the exact cell value. Never guess or invent data.
-7. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
-8. CRITICAL — Sheets ID: extract ONLY the string between /d/ and /edit from the URL. Never pass the full URL.
-9. If you cannot find data or a tool returns no results, say "I couldn't find that" — never make up an answer."""
+5. CRITICAL — Gmail: When the user asks "who emailed me today" or "today's emails", use read_gmail. When they ask about a specific email or "what does X email say", use read_gmail and find that email in the results. When they ask "last email" or "last 2 emails", fetch only that count.
+6. CRITICAL — Email content: If an email has attachments listed (PDF, invoice, etc.), mention them clearly to the user.
+7. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", respond with the draft content clearly formatted as:
+   TO: [recipient]
+   SUBJECT: [subject]
+   BODY: [body text]
+   Then tell the user to click "Approve & Send" to send it.
+8. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
+9. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
+10. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
+11. If you cannot find data, say "I couldn't find that" — never make up an answer."""
 
 
 # ── STEP 1: Intent detection ─────────────────────────────────────────
@@ -271,16 +278,38 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
         input_data = call["input"]
         call_id = call["id"]
         
-        try:
+        try: 
             if name == 'read_gmail':
-                sources_used.append('Gmail')
-                emails = await get_recent_emails(google_access_token, 15)
-                truncated_emails = []
-                for e in emails:
-                    body_text = e.get("body") or e.get("snippet") or ""
-                    e["body"] = body_text[:500]
-                    truncated_emails.append(e)
-                return {"id": call_id, "name": name, "resultData": format_emails_for_context(truncated_emails)}
+              sources_used.append('Gmail')
+            # Smart date detection from the user's question
+              question_lower = " ".join(
+                m.get("content", "") for m in messages
+               ).lower()
+    
+              if "today" in question_lower:
+                date_filter = "today"
+                fetch_count = 20
+              elif "last email" in question_lower or "latest email" in question_lower:
+                date_filter = None
+                fetch_count = 1
+              elif "last 2" in question_lower or "2 email" in question_lower:
+                date_filter = None
+                fetch_count = 2
+              elif "last 3" in question_lower or "3 email" in question_lower:
+                date_filter = None
+                fetch_count = 3
+              elif "last 5" in question_lower or "5 email" in question_lower:
+                date_filter = None
+                fetch_count = 5
+              else:
+                date_filter = None
+                fetch_count = 10
+
+              emails = await get_recent_emails(google_access_token, fetch_count, date_filter)
+                # Truncate body to avoid context overflow
+              for e in emails:
+                e["body"] = (e.get("body") or e.get("snippet") or "")[:500]
+              return {"id": call_id, "name": name, "resultData": format_emails_for_context(emails)}
 
             if name == 'read_calendar':
                 sources_used.append('Calendar')
