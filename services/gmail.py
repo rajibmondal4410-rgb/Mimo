@@ -1,6 +1,5 @@
 import base64
 import asyncio
-import concurrent.futures
 from typing import List, Dict, Any
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -16,8 +15,6 @@ def extract_email_body(payload: Dict[str, Any]) -> str:
             if part.get("mimeType") == "text/plain":
                 data = part.get("body", {}).get("data", "")
                 if data:
-                    # Gmail API uses URL-safe base64 encoding. 
-                    # We add padding just in case it's missing to prevent decoding errors.
                     data += "=" * ((4 - len(data) % 4) % 4)
                     body += base64.urlsafe_b64decode(data).decode("utf-8")
             elif "parts" in part:
@@ -31,13 +28,11 @@ def extract_email_body(payload: Dict[str, Any]) -> str:
 
 async def get_recent_emails(access_token: str, max_results: int = 15) -> List[Dict[str, Any]]:
     """
-    Fetches the latest emails from the primary inbox. 
-    Uses ThreadPoolExecutor to fetch the full message payloads concurrently (like Promise.all).
+    Fetches the latest emails sequentially to prevent Google API thread collisions.
     """
     creds = Credentials(token=access_token)
 
     def fetch_sync() -> List[Dict[str, Any]]:
-        # cache_discovery=False removes an annoying warning in Python
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         
         # 1. Fetch the list of Message IDs
@@ -52,43 +47,40 @@ async def get_recent_emails(access_token: str, max_results: int = 15) -> List[Di
         if not messages:
             return []
 
-        # 2. Worker function to get the full email format
-        def get_single_msg(msg_meta: Dict[str, str]):
-            return service.users().messages().get(
-                userId="me", id=msg_meta["id"], format="full"
-            ).execute()
-
-        # 3. Fetch all full messages concurrently (Mimicking Promise.all)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            fetched_messages = list(executor.map(get_single_msg, messages))
-
-        # 4. Parse the results
         parsed_results = []
-        for msg in fetched_messages:
-            headers = msg.get("payload", {}).get("headers", [])
-            
-            # Helper to safely pull headers by name
-            def get_header(name: str) -> str:
-                for h in headers:
-                    if h.get("name", "").lower() == name.lower():
-                        return h.get("value", "")
-                return ""
+        
+        # 2. Fetch full messages sequentially (Thread-safe)
+        for msg_meta in messages:
+            try:
+                msg = service.users().messages().get(
+                    userId="me", id=msg_meta["id"], format="full"
+                ).execute()
+                
+                headers = msg.get("payload", {}).get("headers", [])
+                
+                def get_header(name: str) -> str:
+                    for h in headers:
+                        if h.get("name", "").lower() == name.lower():
+                            return h.get("value", "")
+                    return ""
 
-            full_text = extract_email_body(msg.get("payload", {}))
-            
-            parsed_results.append({
-                "id": msg["id"],
-                "from": get_header("From"),
-                "subject": get_header("Subject"),
-                "date": get_header("Date"),
-                "snippet": msg.get("snippet", ""),
-                "isRead": "UNREAD" not in msg.get("labelIds", []),
-                "body": full_text,
-            })
-            
+                full_text = extract_email_body(msg.get("payload", {}))
+                
+                parsed_results.append({
+                    "id": msg["id"],
+                    "from": get_header("From"),
+                    "subject": get_header("Subject"),
+                    "date": get_header("Date"),
+                    "snippet": msg.get("snippet", ""),
+                    "isRead": "UNREAD" not in msg.get("labelIds", []),
+                    "body": full_text,
+                })
+            except Exception as e:
+                print(f"Skipped email {msg_meta['id']} due to error: {e}")
+                continue
+                
         return parsed_results
 
-    # Run the synchronous Google SDK calls in a separate thread so it doesn't block FastAPI
     return await asyncio.to_thread(fetch_sync)
 
 def format_emails_for_context(emails: List[Dict[str, Any]]) -> str:
@@ -98,7 +90,6 @@ def format_emails_for_context(emails: List[Dict[str, Any]]) -> str:
 
     formatted_list = []
     for i, e in enumerate(emails):
-        # Fallback to snippet if body is empty, then truncate to 500 characters
         content = e.get("body") or e.get("snippet") or ""
         content = content[:500]
         
