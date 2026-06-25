@@ -280,36 +280,25 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
         
         try: 
             if name == 'read_gmail':
-              sources_used.append('Gmail')
-            # Smart date detection from the user's question
-              question_lower = " ".join(
-                m.get("content", "") for m in messages
-               ).lower()
-    
-              if "today" in question_lower:
-                date_filter = "today"
-                fetch_count = 20
-              elif "last email" in question_lower or "latest email" in question_lower:
-                date_filter = None
-                fetch_count = 1
-              elif "last 2" in question_lower or "2 email" in question_lower:
-                date_filter = None
-                fetch_count = 2
-              elif "last 3" in question_lower or "3 email" in question_lower:
-                date_filter = None
-                fetch_count = 3
-              elif "last 5" in question_lower or "5 email" in question_lower:
-                date_filter = None
-                fetch_count = 5
-              else:
-                date_filter = None
-                fetch_count = 10
-
-              emails = await get_recent_emails(google_access_token, fetch_count, date_filter)
-                # Truncate body to avoid context overflow
-              for e in emails:
-                e["body"] = (e.get("body") or e.get("snippet") or "")[:500]
-              return {"id": call_id, "name": name, "resultData": format_emails_for_context(emails)}
+                sources_used.append('Gmail')
+                
+                # Detect user intent
+                q_text = " ".join(m.get("content", "") for m in messages).lower()
+                
+                # Determine parameters
+                date_f = "today" if "today" in q_text else None
+                if "last email" in q_text or "latest" in q_text: fetch_c = 1
+                elif "last 2" in q_text: fetch_c = 2
+                elif "last 3" in q_text: fetch_c = 3
+                elif "last 5" in q_text: fetch_c = 5
+                else: fetch_c = 10
+                
+                # Execute
+                emails = await get_recent_emails(google_access_token, max_results=fetch_c, date_filter=date_f)
+                
+                # Format to JSON to prevent LLM hallucinations
+                import json
+                return {"id": call_id, "name": name, "resultData": json.dumps(emails)}
 
             if name == 'read_calendar':
                 sources_used.append('Calendar')
