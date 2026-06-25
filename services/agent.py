@@ -19,7 +19,7 @@ async def call_groq(messages: List[Dict[str, str]], system_prompt: str, tools: L
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
         raise ValueError("No GROQ_API_KEY found in environment variables.")
-        
+
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "system", "content": system_prompt}] + messages,
@@ -38,10 +38,10 @@ async def call_groq(messages: List[Dict[str, str]], system_prompt: str, tools: L
         )
         if res.status_code != 200:
             raise RuntimeError(f"Groq API Error: {res.text}")
-            
+
         data = res.json()
         msg = data["choices"][0]["message"]
-        
+
         if msg.get("tool_calls"):
             calls = []
             for tc in msg["tool_calls"]:
@@ -51,7 +51,7 @@ async def call_groq(messages: List[Dict[str, str]], system_prompt: str, tools: L
                     "input": json.loads(tc["function"]["arguments"])
                 })
             return {"action": "tool_calls", "calls": calls, "rawMessage": msg}
-            
+
         return {"action": "text", "text": msg.get("content") or ""}
 
 
@@ -59,7 +59,7 @@ async def call_gemini(messages: List[Dict[str, str]], system_prompt: str, tools:
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         raise ValueError("No GEMINI_API_KEY found in environment variables.")
-        
+
     body = {
         "model": "gemini-2.0-flash",
         "messages": [{"role": "system", "content": system_prompt}] + messages,
@@ -77,10 +77,10 @@ async def call_gemini(messages: List[Dict[str, str]], system_prompt: str, tools:
         )
         if res.status_code != 200:
             raise RuntimeError(f"Gemini API Error: {res.text}")
-            
+
         data = res.json()
         msg = data["choices"][0]["message"]
-        
+
         if msg.get("tool_calls"):
             calls = []
             for tc in msg["tool_calls"]:
@@ -90,9 +90,17 @@ async def call_gemini(messages: List[Dict[str, str]], system_prompt: str, tools:
                     "input": json.loads(tc["function"]["arguments"])
                 })
             return {"action": "tool_calls", "calls": calls, "rawMessage": msg}
-            
+
         return {"action": "text", "text": msg.get("content") or ""}
 
+
+# ── NOTE on provider routing ──────────────────────────────────────────
+# Per your request: Gmail-related calls are pinned to Groq ONLY, with no
+# silent fallback to Gemini. The two models parse tool arguments slightly
+# differently, and silently switching providers mid-conversation was part
+# of why results felt random (one request answered by Groq, the next by
+# Gemini, with no visible difference to you). General chat/other tools
+# still use the full fallback chain since that risk doesn't apply there.
 
 async def ask_any(messages: List[Dict[str, str]], system_prompt: str, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     errors = []
@@ -104,7 +112,14 @@ async def ask_any(messages: List[Dict[str, str]], system_prompt: str, tools: Lis
     raise RuntimeError(f"All providers failed: {' | '.join(errors)}")
 
 
-async def synthesise(final_messages: List[Dict[str, Any]], system_prompt: str) -> Dict[str, Any]:
+async def ask_groq_only(messages: List[Dict[str, str]], system_prompt: str, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Used for Gmail intent detection — no fallback, so behavior is consistent."""
+    return await call_groq(messages, system_prompt, tools)
+
+
+async def synthesise(final_messages: List[Dict[str, Any]], system_prompt: str, groq_only: bool = False) -> Dict[str, Any]:
+    if groq_only:
+        return await call_groq(final_messages, system_prompt, None)
     errors = []
     for fn in [call_groq, call_gemini]:
         try:
@@ -119,8 +134,31 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_gmail",
-            "description": "Check recent emails from inbox only (no promotions).",
-            "parameters": {"type": "object", "properties": {}}
+            "description": (
+                "Fetch emails from the inbox (promotions/social/updates excluded). "
+                "ALWAYS set both parameters explicitly based on exactly what the user asked. "
+                "Examples: 'who emailed me today' -> date_filter='today', count=50. "
+                "'what mailed me yesterday' -> date_filter='yesterday', count=50. "
+                "'last email' / 'latest email' -> date_filter='none', count=1. "
+                "'last 2 emails' -> date_filter='none', count=2. "
+                "'last 3 emails' -> date_filter='none', count=3. "
+                "no specific count or date mentioned -> date_filter='none', count=10."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Exact number of emails to fetch, taken directly from the user's wording. Default 10 if unspecified."
+                    },
+                    "date_filter": {
+                        "type": "string",
+                        "enum": ["today", "yesterday", "none"],
+                        "description": "'today' ONLY if user said 'today'. 'yesterday' ONLY if user said 'yesterday'. Otherwise 'none'."
+                    }
+                },
+                "required": ["count", "date_filter"]
+            }
         }
     },
     {
@@ -237,32 +275,48 @@ RULES:
 2. Never mention which tools or APIs you used.
 3. No JSON in responses — plain text only.
 4. For lists use clean bullet points.
-5. CRITICAL — Gmail: When the user asks "who emailed me today" or "today's emails", use read_gmail. When they ask about a specific email or "what does X email say", use read_gmail and find that email in the results. When they ask "last email" or "last 2 emails", fetch only that count.
-6. CRITICAL — Email content: If an email has attachments listed (PDF, invoice, etc.), mention them clearly to the user.
-7. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", respond with the draft content clearly formatted as:
+5. CRITICAL — Gmail: call read_gmail with explicit `count` and `date_filter` arguments that match the user's exact wording (see tool description for examples). Never guess past what they literally said.
+6. CRITICAL — Gmail results integrity: The read_gmail tool result tells you EXACTLY how many emails were found. You must list every single one of them and ONLY those — never add an email that is not in the tool result, never omit one that is. If the result says 0 emails found, say so plainly. Do not summarize generically — use the actual From/Subject/Date shown.
+7. CRITICAL — Email content: If an email has attachments listed (PDF, invoice, etc.), mention them clearly to the user.
+8. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", respond with the draft content clearly formatted as:
    TO: [recipient]
    SUBJECT: [subject]
    BODY: [body text]
    Then tell the user to click "Approve & Send" to send it.
-8. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
-9. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
-10. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
-11. If you cannot find data, say "I couldn't find that" — never make up an answer."""
+9. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
+10. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
+11. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
+12. If you cannot find data, say "I couldn't find that" — never make up an answer."""
 
 
 # ── STEP 1: Intent detection ─────────────────────────────────────────
 async def determine_intent_and_ask(question: str, history: List[Dict[str, str]], timezone: str = "Asia/Kolkata") -> Dict[str, Any]:
     messages = history[-4:] + [{"role": "user", "content": question}]
-    ai_res = await ask_any(messages, SYSTEM_PROMPT, TOOLS)
-    
+
+    # Gmail-related questions are routed to Groq only, with no fallback,
+    # so tool-argument parsing stays consistent. We do a cheap keyword
+    # pre-check on the CURRENT question only (not full history) just to
+    # pick the provider chain — the LLM still makes the real decision
+    # about which tool to call and what arguments to pass.
+    is_mail_related = any(
+        kw in question.lower()
+        for kw in ["email", "mail", "inbox", "gmail", "draft", "invoice", "attachment"]
+    )
+
+    if is_mail_related:
+        ai_res = await ask_groq_only(messages, SYSTEM_PROMPT, TOOLS)
+    else:
+        ai_res = await ask_any(messages, SYSTEM_PROMPT, TOOLS)
+
     if ai_res["action"] == "text":
         return {"intent": "ANSWER", "answer": ai_res["text"]}
-        
+
     return {
-        "intent": "SEARCH", 
-        "toolCalls": ai_res["calls"], 
-        "rawMessage": ai_res["rawMessage"], 
-        "messages": messages
+        "intent": "SEARCH",
+        "toolCalls": ai_res["calls"],
+        "rawMessage": ai_res["rawMessage"],
+        "messages": messages,
+        "groqOnly": is_mail_related
     }
 
 
@@ -271,46 +325,43 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
     tool_calls = intent_data["toolCalls"]
     raw_message = intent_data["rawMessage"]
     messages = intent_data["messages"]
+    groq_only = intent_data.get("groqOnly", False)
     sources_used = []
 
     async def run_single_tool(call: Dict[str, Any]) -> Dict[str, Any]:
         name = call["name"]
         input_data = call["input"]
         call_id = call["id"]
-        
-        try: 
+
+        try:
             if name == 'read_gmail':
-              sources_used.append('Gmail')
-            # Smart date detection from the user's question
-              question_lower = " ".join(
-                m.get("content", "") for m in messages
-               ).lower()
-    
-              if "today" in question_lower:
-                date_filter = "today"
-                fetch_count = 20
-              elif "last email" in question_lower or "latest email" in question_lower:
-                date_filter = None
-                fetch_count = 1
-              elif "last 2" in question_lower or "2 email" in question_lower:
-                date_filter = None
-                fetch_count = 2
-              elif "last 3" in question_lower or "3 email" in question_lower:
-                date_filter = None
-                fetch_count = 3
-              elif "last 5" in question_lower or "5 email" in question_lower:
-                date_filter = None
-                fetch_count = 5
-              else:
-                date_filter = None
-                fetch_count = 10
+                sources_used.append('Gmail')
 
-              emails = await get_recent_emails(google_access_token, fetch_count, date_filter)
-                # Truncate body to avoid context overflow
-              for e in emails:
-                e["body"] = (e.get("body") or e.get("snippet") or "")[:500]
-              return {"id": call_id, "name": name, "resultData": format_emails_for_context(emails)}
+                # Trust the LLM's structured tool arguments directly.
+                # No re-scanning of conversation text, no guessing —
+                # this is the entire fix for "wrong/invented emails".
+                raw_count = input_data.get("count", 10)
+                try:
+                    fetch_count = max(1, min(int(raw_count), 50))
+                except (TypeError, ValueError):
+                    fetch_count = 10
 
+                raw_date_filter = (input_data.get("date_filter") or "none").lower()
+                date_filter = raw_date_filter if raw_date_filter in ("today", "yesterday") else None
+
+                emails = await get_recent_emails(
+                    google_access_token,
+                    max_results=fetch_count,
+                    date_filter=date_filter,
+                    tz_name=timezone
+                )
+
+                # Truncate body to avoid context overflow — keep enough
+                # for genuine summarization, not so much it blows the window.
+                for e in emails:
+                    e["body"] = (e.get("body") or e.get("snippet") or "")[:500]
+
+                return {"id": call_id, "name": name, "resultData": format_emails_for_context(emails)}
 
             if name == 'read_calendar':
                 sources_used.append('Calendar')
@@ -373,7 +424,7 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
                 return {"id": call_id, "name": name, "resultData": doc_content[:6000]}
 
             return {"id": call_id, "name": name, "resultData": "Unknown tool"}
-            
+
         except Exception as err:
             print(f"[Tool error] {name}: {str(err)}")
             return {"id": call_id, "name": name, "resultData": f"Error: {str(err)}"}
@@ -409,7 +460,7 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
         final_messages = truncated_messages
         print(f"[Agent] Content truncated from {total_chars} chars for Groq compatibility")
 
-    final_res = await synthesise(final_messages, SYSTEM_PROMPT)
+    final_res = await synthesise(final_messages, SYSTEM_PROMPT, groq_only=groq_only)
 
     return {
         "answer": final_res.get("text") or "Done.",

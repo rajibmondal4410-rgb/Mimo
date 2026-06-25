@@ -1,7 +1,8 @@
 import base64
 import asyncio
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+from zoneinfo import ZoneInfo
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -53,30 +54,60 @@ def extract_attachments(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     return attachments
 
 
+def build_date_query(date_filter: Optional[str], tz_name: str = "Asia/Kolkata") -> str:
+    """
+    Builds the Gmail `after:`/`before:` clause IN THE USER'S LOCAL TIMEZONE.
+    Gmail's after:/before: are date-granular (YYYY/MM/DD) and are evaluated
+    against the message internal date in UTC, so to get "today" right for
+    an Asia/Kolkata user we must compute today's date using their tz, not UTC.
+
+    Supported date_filter values:
+      "today"      -> after: today 00:00 local, before: tomorrow 00:00 local
+      "yesterday"  -> after: yesterday 00:00 local, before: today 00:00 local
+      None         -> no date restriction at all
+    """
+    if not date_filter:
+        return ""
+
+    tz = ZoneInfo(tz_name)
+    now_local = datetime.now(tz)
+    today_local = now_local.date()
+
+    if date_filter == "today":
+        start = today_local
+        end = today_local + timedelta(days=1)
+    elif date_filter == "yesterday":
+        start = today_local - timedelta(days=1)
+        end = today_local
+    else:
+        # Unknown filter value — fail safe to no restriction rather than
+        # silently fetching the wrong window.
+        return ""
+
+    return f" after:{start.strftime('%Y/%m/%d')} before:{end.strftime('%Y/%m/%d')}"
+
+
 async def get_recent_emails(
     access_token: str,
     max_results: int = 10,
-    date_filter: str = None   # e.g. "today", "2026/06/25", or None for latest
+    date_filter: Optional[str] = None,   # "today", "yesterday", or None for latest N
+    tz_name: str = "Asia/Kolkata"
 ) -> List[Dict[str, Any]]:
     """
-    Fetches emails with optional date filtering.
-    date_filter="today"  → only today's emails
-    date_filter=None     → latest N emails regardless of date
+    Fetches emails with optional date filtering, deterministically.
+
+    IMPORTANT: max_results is a HARD CAP. Gmail's list API will not return
+    more than this many message IDs, so the LLM downstream can never expand
+    or invent extra emails beyond what's actually here — it can only
+    summarize what's in this exact list.
     """
     creds = Credentials(token=access_token)
 
     def fetch_sync() -> List[Dict[str, Any]]:
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-        # Build query
         base_q = "in:inbox -category:promotions -category:social -category:updates -category:forums"
-        if date_filter == "today":
-            today = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-            query = f"{base_q} after:{today}"
-        elif date_filter and date_filter != "today":
-            query = f"{base_q} after:{date_filter}"
-        else:
-            query = base_q
+        query = base_q + build_date_query(date_filter, tz_name)
 
         list_res = service.users().messages().list(
             userId="me",
@@ -123,18 +154,21 @@ async def get_recent_emails(
 
 
 def format_emails_for_context(emails: List[Dict[str, Any]]) -> str:
-    """Formats emails into a clean block for the LLM."""
+    """
+    Formats emails into a clean, numbered block for the LLM.
+    The exact count is stated up front so the model cannot pad or shrink it.
+    """
     if not emails:
-        return "No emails found."
+        return "RESULT: 0 emails found matching the filter. Tell the user no emails were found — do not invent any."
 
-    blocks = []
+    blocks = [f"RESULT: Exactly {len(emails)} email(s) found. List ALL of them, do not add or omit any.\n"]
     for i, e in enumerate(emails, 1):
         body_preview = (e.get("body") or e.get("snippet") or "")[:600]
         read_status = "Read" if e.get("isRead") else "UNREAD"
         att_list = ", ".join(a["filename"] for a in e.get("attachments", [])) or "None"
 
         blocks.append(
-            f"--- Email {i} ---\n"
+            f"--- Email {i} of {len(emails)} ---\n"
             f"From:        {e['from']}\n"
             f"Subject:     {e['subject']}\n"
             f"Date:        {e['date']}\n"
