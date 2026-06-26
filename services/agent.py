@@ -135,33 +135,47 @@ TOOLS = [
         "function": {
             "name": "read_gmail",
             "description": (
-                "Fetch emails from the inbox (promotions/social/updates excluded). "
-                "ALWAYS set both parameters explicitly based on exactly what the user asked. "
-                "Examples: 'who emailed me today' -> date_filter='today', count=50. "
-                "'what mailed me yesterday' -> date_filter='yesterday', count=50. "
-                "'last email' / 'latest email' -> date_filter='none', count=1. "
-                "'last 2 emails' -> date_filter='none', count=2. "
-                "'last 3 emails' -> date_filter='none', count=3. "
-                "no specific count or date mentioned -> date_filter='none', count=10."
+                "Fetch emails from the inbox. By default this includes EVERY email "
+                "in the inbox regardless of type — personal messages, newsletters, "
+                "automated/system senders, anything — exactly like a person scrolling "
+                "their own inbox would see, with nothing pre-filtered out. "
+                "ALWAYS set count and date_filter explicitly based on exactly what the user asked. "
+                "If the user refers to a specific person by name, relationship, or email "
+                "(a friend, a contact, a company, anyone at all), set the from_person "
+                "parameter to that name or email so results are filtered to just them. "
+                "Examples: "
+                "'who emailed me today' -> date_filter='today', count=50, from_person=null. "
+                "'did Priya send anything today' -> date_filter='today', count=20, from_person='Priya'. "
+                "'check what my friend Arjun sent' -> date_filter='none', count=20, from_person='Arjun'. "
+                "'anything from Razorpay' -> date_filter='none', count=20, from_person='Razorpay'. "
+                "'last email' / 'latest email' -> date_filter='none', count=1, from_person=null. "
+                "'last 2 emails' -> date_filter='none', count=2, from_person=null. "
+                "'last 3 emails' -> date_filter='none', count=3, from_person=null. "
+                "no specific count or date mentioned -> date_filter='none', count=10, from_person=null."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "count": {
                         "type": "integer",
-                        "description": "Exact number of emails to fetch, taken directly from the user's wording. Default 10 if unspecified."
+                        "description": "Exact number of emails to fetch, taken directly from the user's wording. Default 10 if unspecified. Use a higher number like 30-50 for broad date-based queries like 'today' so nothing is missed."
                     },
                     "date_filter": {
                         "type": "string",
                         "enum": ["today", "yesterday", "none"],
                         "description": "'today' ONLY if user said 'today'. 'yesterday' ONLY if user said 'yesterday'. Otherwise 'none'."
+                    },
+                    "from_person": {
+                        "type": ["string", "null"],
+                        "description": "Name or email of a specific sender if the user referred to one — could be a friend, family member, colleague, company, anyone. Null if no specific sender was named."
                     }
                 },
-                "required": ["count", "date_filter"]
+                "required": ["count", "date_filter", "from_person"]
             }
         }
     },
     {
+
         "type": "function",
         "function": {
             "name": "read_calendar",
@@ -275,14 +289,14 @@ RULES:
 2. Never mention which tools or APIs you used.
 3. No JSON in responses — plain text only.
 4. For lists use clean bullet points.
-5. CRITICAL — Gmail: call read_gmail with explicit `count` and `date_filter` arguments that match the user's exact wording (see tool description for examples). Never guess past what they literally said.
-6. CRITICAL — Gmail results integrity: The read_gmail tool result tells you EXACTLY how many emails were found. You must list every single one of them and ONLY those — never add an email that is not in the tool result, never omit one that is. If the result says 0 emails found, say so plainly. Do not summarize generically — use the actual From/Subject/Date shown.
+5. CRITICAL — Gmail: call read_gmail with explicit `count`, `date_filter`, and `from_person` arguments that match exactly what the user said (see tool description for examples). If the user names or refers to any specific person, friend, contact, or sender — set from_person to that. Never guess past what they literally said.
+6. CRITICAL — Gmail results integrity: The read_gmail tool result tells you EXACTLY how many emails were found. You must list every single one of them and ONLY those — never add an email that is not in the tool result, never omit one that is. If the result says 0 emails found, say so plainly. Do not summarize generically — use the actual From/Subject/Date shown. The inbox is fetched in full (no category is hidden), so trust the result completely as what's actually there.
 7. CRITICAL — Email content: If an email has attachments listed (PDF, invoice, etc.), mention them clearly to the user.
-8. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", respond with the draft content clearly formatted as:
+8. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X" or describes what they want to tell someone in their own words, write a complete, well-formed email from that and respond with the draft content clearly formatted as:
    TO: [recipient]
    SUBJECT: [subject]
    BODY: [body text]
-   Then tell the user to click "Approve & Send" to send it.
+   Then tell the user to click "Approve & Send" to send it. This applies to anyone the user wants to email — a friend, family, a company, anyone — not just professional contacts.
 9. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
 10. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
 11. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
@@ -349,11 +363,24 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
                 raw_date_filter = (input_data.get("date_filter") or "none").lower()
                 date_filter = raw_date_filter if raw_date_filter in ("today", "yesterday") else None
 
+                from_person = input_data.get("from_person") or None
+                if isinstance(from_person, str) and not from_person.strip():
+                    from_person = None
+
+                # exclude_bulk is intentionally left False (the default) here.
+                # Mimo is meant to see the FULL inbox the way a human would —
+                # personal mail, newsletters, automated senders, everything —
+                # and reason about relevance itself rather than have Gmail's
+                # bulk-mail categorization silently hide real messages before
+                # they're ever shown. This was the cause of "only Render
+                # emails show up" — the old query hardcoded that exclusion.
                 emails = await get_recent_emails(
                     google_access_token,
                     max_results=fetch_count,
                     date_filter=date_filter,
-                    tz_name=timezone
+                    tz_name=timezone,
+                    sender=from_person,
+                    exclude_bulk=False
                 )
 
                 # Truncate body to avoid context overflow — keep enough

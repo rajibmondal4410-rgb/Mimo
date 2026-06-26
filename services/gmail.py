@@ -91,10 +91,18 @@ async def get_recent_emails(
     access_token: str,
     max_results: int = 10,
     date_filter: Optional[str] = None,   # "today", "yesterday", or None for latest N
-    tz_name: str = "Asia/Kolkata"
+    tz_name: str = "Asia/Kolkata",
+    sender: Optional[str] = None,        # name or email to filter by, e.g. "boss@company.com" or "Rohan"
+    exclude_bulk: bool = False           # if True, drops promotions/social/updates/forums categories
 ) -> List[Dict[str, Any]]:
     """
-    Fetches emails with optional date filtering, deterministically.
+    Fetches emails with optional date + sender filtering, deterministically.
+
+    Default behavior (exclude_bulk=False) fetches the FULL inbox — newsletters,
+    automated senders, everything — the same way a human assistant would see
+    the inbox before deciding what's relevant. Category exclusion is now an
+    explicit opt-in, not a silent default, because hiding "AI Automation"-style
+    senders by default was causing real, newer emails to be skipped entirely.
 
     IMPORTANT: max_results is a HARD CAP. Gmail's list API will not return
     more than this many message IDs, so the LLM downstream can never expand
@@ -106,7 +114,15 @@ async def get_recent_emails(
     def fetch_sync() -> List[Dict[str, Any]]:
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-        base_q = "in:inbox -category:promotions -category:social -category:updates -category:forums"
+        base_q = "in:inbox"
+        if exclude_bulk:
+            base_q += " -category:promotions -category:social -category:updates -category:forums"
+        if sender:
+            # Gmail's from: operator matches name or email substrings, so
+            # "boss" or "boss@company.com" or "Rohan Sharma" all work.
+            safe_sender = sender.replace('"', '')
+            base_q += f' from:"{safe_sender}"'
+
         query = base_q + build_date_query(date_filter, tz_name)
 
         list_res = service.users().messages().list(
