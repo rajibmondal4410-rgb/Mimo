@@ -55,13 +55,13 @@ async def call_groq(messages: List[Dict[str, str]], system_prompt: str, tools: L
         return {"action": "text", "text": msg.get("content") or ""}
 
 
-async def call_gemini(messages: List[Dict[str, str]], system_prompt: str, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def call_gemini(messages, system_prompt, tools=None):
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
-        raise ValueError("No GEMINI_API_KEY found in environment variables.")
+        raise ValueError("No GEMINI_API_KEY found.")
 
     body = {
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",   # ← higher free quota than 2.0-flash
         "messages": [{"role": "system", "content": system_prompt}] + messages,
         "temperature": 0
     }
@@ -79,14 +79,14 @@ async def call_gemini(messages: List[Dict[str, str]], system_prompt: str, tools:
             raise RuntimeError(f"Gemini API Error: {res.text}")
 
         data = res.json()
-        msg = data["choices"][0]["message"]
+        msg  = data["choices"][0]["message"]
 
         if msg.get("tool_calls"):
             calls = []
             for tc in msg["tool_calls"]:
                 calls.append({
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
+                    "id":    tc["id"],
+                    "name":  tc["function"]["name"],
                     "input": json.loads(tc["function"]["arguments"])
                 })
             return {"action": "tool_calls", "calls": calls, "rawMessage": msg}
@@ -175,8 +175,8 @@ TOOLS = [
                         "description": "'today' ONLY if user said 'today'. 'yesterday' ONLY if user said 'yesterday'. Otherwise 'none'."
                     },
                     "from_person": {
-                         "type": "string",
-                          "description": "Name or email of a specific sender if the user referred to one. Use empty string \"\" if no specific sender was named."
+                        "type": "string",
+                        "description": "Name or email of a specific sender. Use empty string if no specific sender was named."
                     }
                 },
                 "required": ["count", "date_filter", "from_person"]

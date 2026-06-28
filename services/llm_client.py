@@ -4,8 +4,8 @@ from typing import List, Dict, Any, Optional
 
 # ── Model names per provider ───────────────────────────
 MODELS = {
-    "groq": "llama-3.3-70b-versatile",
-    "gemini": "gemini-2.0-flash", # Or gemini-1.5-flash-latest depending on your preference
+    "groq":   "llama-3.3-70b-versatile",
+    "gemini": "gemini-2.5-flash",
 }
 
 def build_system_prompt(context: Optional[str], context_source: Optional[str]) -> str:
