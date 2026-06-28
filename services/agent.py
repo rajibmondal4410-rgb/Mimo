@@ -300,7 +300,16 @@ RULES:
 9. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
 10. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
 11. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
-12. If you cannot find data, say "I couldn't find that" — never make up an answer."""
+12. If you cannot find data, say "I couldn't find that" — never make up an answer.
+13. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", 
+   you MUST use the recipient's full email address in the TO field — never just a name. 
+   If you read an email from that person earlier in this conversation, use the From: 
+   address you saw. If you don't know their email, ask the user for it before writing 
+   the draft. Format exactly as:
+   TO: email@domain.com
+   SUBJECT: subject here
+   BODY: body text here
+"""
 
 
 # ── STEP 1: Intent detection ─────────────────────────────────────────
