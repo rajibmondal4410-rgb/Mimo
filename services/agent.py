@@ -113,8 +113,17 @@ async def ask_any(messages: List[Dict[str, str]], system_prompt: str, tools: Lis
 
 
 async def ask_groq_only(messages: List[Dict[str, str]], system_prompt: str, tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Used for Gmail intent detection — no fallback, so behavior is consistent."""
-    return await call_groq(messages, system_prompt, tools)
+    """Used for Gmail intent detection. Falls back to Gemini if Groq fails tool generation."""
+    try:
+        return await call_groq(messages, system_prompt, tools)
+    except Exception as e:
+        err = str(e)
+        # Groq sometimes fails tool call generation for certain inputs
+        # Fall back to Gemini silently rather than crashing the whole request
+        if "failed_generation" in err or "tool_use_failed" in err or "invalid_request_error" in err:
+            print(f"[Groq tool generation failed, falling back to Gemini]: {err[:200]}")
+            return await call_gemini(messages, system_prompt, tools)
+        raise
 
 
 async def synthesise(final_messages: List[Dict[str, Any]], system_prompt: str, groq_only: bool = False) -> Dict[str, Any]:
@@ -166,8 +175,8 @@ TOOLS = [
                         "description": "'today' ONLY if user said 'today'. 'yesterday' ONLY if user said 'yesterday'. Otherwise 'none'."
                     },
                     "from_person": {
-                        "type": ["string", "null"],
-                        "description": "Name or email of a specific sender if the user referred to one — could be a friend, family member, colleague, company, anyone. Null if no specific sender was named."
+                         "type": "string",
+                          "description": "Name or email of a specific sender if the user referred to one. Use empty string \"\" if no specific sender was named."
                     }
                 },
                 "required": ["count", "date_filter", "from_person"]
@@ -373,8 +382,8 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
                 date_filter = raw_date_filter if raw_date_filter in ("today", "yesterday") else None
 
                 from_person = input_data.get("from_person") or None
-                if isinstance(from_person, str) and not from_person.strip():
-                    from_person = None
+                if isinstance(from_person, str) and (not from_person.strip() or from_person.strip() == '""'):
+                     from_person = None
 
                 # exclude_bulk is intentionally left False (the default) here.
                 # Mimo is meant to see the FULL inbox the way a human would —
