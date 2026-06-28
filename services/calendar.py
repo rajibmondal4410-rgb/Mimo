@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -26,7 +27,7 @@ async def get_upcoming_events(access_token: str, max_results: int = 10) -> List[
 
         for e in events:
             start = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date") or ""
-            end   = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date") or ""
+            end   = e.get("end",   {}).get("dateTime") or e.get("end",   {}).get("date") or ""
             attendees = [a.get("email") for a in e.get("attendees", []) if a.get("email")]
 
             parsed_events.append({
@@ -44,21 +45,39 @@ async def get_upcoming_events(access_token: str, max_results: int = 10) -> List[
     return await asyncio.to_thread(fetch_sync)
 
 
-def to_local(datetime_str: str, tz_offset: str = "+05:30") -> str:
+def make_aware(datetime_str: str, tz_name: str) -> str:
     """
-    Converts a naive datetime string like "2026-06-18T14:00:00"
-    into a timezone-aware ISO string by appending the offset.
-    If the string already has a timezone marker, it is returned as-is.
+    Takes a naive datetime string like "2026-06-27T17:00:00" and converts it
+    to a fully timezone-aware ISO string using the user's actual IANA timezone.
+    
+    If the string already has timezone info (Z, +, or offset), returns as-is.
+    Works for ANY timezone on Earth — no hardcoded offset map needed.
     """
     if not datetime_str:
         return datetime_str
-    # Already has timezone info
+
+    # Already timezone-aware — leave it alone
     if datetime_str.endswith("Z") or "+" in datetime_str:
         return datetime_str
-    # Check for negative UTC offset in the time portion (after position 10)
-    if "-" in datetime_str[10:]:
+    if len(datetime_str) > 10 and "-" in datetime_str[10:]:
         return datetime_str
-    return f"{datetime_str}{tz_offset}"
+
+    # Parse the naive datetime string
+    try:
+        naive_dt = datetime.strptime(datetime_str[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        # If parsing fails, return as-is and let Google API handle it
+        return datetime_str
+
+    # Attach the user's real timezone using zoneinfo
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, Exception):
+        # Unknown timezone — fall back to UTC rather than crashing
+        tz = ZoneInfo("UTC")
+
+    aware_dt = naive_dt.replace(tzinfo=tz)
+    return aware_dt.isoformat()
 
 
 async def create_calendar_event(
@@ -70,47 +89,21 @@ async def create_calendar_event(
     timezone_name: str = "Asia/Kolkata",
 ) -> Dict[str, Any]:
     """
-    Creates a new event on the primary calendar.
+    Creates a new event on the primary calendar in the user's local timezone.
+    timezone_name is the IANA name sent by the frontend (e.g. "America/New_York").
     Defaults to a 1-hour duration when no end_time is given.
-    Accepts an optional timezone_name (IANA name) — defaults to Asia/Kolkata.
-
-    The agent.py calls this as:
-        create_calendar_event(token, title, startTime, endTime, description, timezone)
-    so the 6th positional arg maps to timezone_name here — fixing the
-    "takes 3 to 5 positional arguments but 6 were given" error.
     """
     creds = Credentials(token=access_token)
 
-    # Map IANA timezone name to a UTC offset string for the naive datetime conversion.
-    # We keep this simple: only IST is used in practice; extend the map if needed.
-    TZ_OFFSETS = {
-        "Asia/Kolkata":    "+05:30",
-        "Asia/Calcutta":   "+05:30",
-        "UTC":             "+00:00",
-        "America/New_York": "-05:00",
-        "America/Chicago":  "-06:00",
-        "America/Los_Angeles": "-08:00",
-        "Europe/London":   "+00:00",
-        "Europe/Berlin":   "+01:00",
-    }
-    tz_offset = TZ_OFFSETS.get(timezone_name, "+05:30")
-
-    start_aware = to_local(start_time, tz_offset)
+    start_aware = make_aware(start_time, timezone_name)
 
     if end_time:
-        end_aware = to_local(end_time, tz_offset)
+        end_aware = make_aware(end_time, timezone_name)
     else:
-        # Default: 1 hour after start
         try:
             start_dt = datetime.fromisoformat(start_aware)
         except ValueError:
-            # Fallback parse for edge cases
-            base_dt  = datetime.strptime(start_aware[:19], "%Y-%m-%dT%H:%M:%S")
-            h, m     = map(int, tz_offset.lstrip("+-").split(":"))
-            sign     = 1 if "+" in tz_offset else -1
-            ist_tz   = timezone(timedelta(hours=sign * h, minutes=sign * m))
-            start_dt = base_dt.replace(tzinfo=ist_tz)
-
+            start_dt = datetime.now(ZoneInfo(timezone_name))
         end_aware = (start_dt + timedelta(hours=1)).isoformat()
 
     def insert_sync() -> Dict[str, Any]:
@@ -147,14 +140,13 @@ def format_events_for_context(events: List[Dict[str, Any]]) -> str:
     formatted_list = []
     for i, e in enumerate(events):
         attendees_str = ", ".join(e["attendees"]) if e["attendees"] else "N/A"
-        location_str  = e["location"] or "N/A"
 
         event_block = (
             f"Event {i + 1}:\n"
             f"  Title:     {e['title']}\n"
             f"  Start:     {e['start']}\n"
             f"  End:       {e['end']}\n"
-            f"  Location:  {location_str}\n"
+            f"  Location:  {e.get('location') or 'N/A'}\n"
             f"  Attendees: {attendees_str}\n"
             f"  Notes:     {e.get('description') or 'N/A'}"
         )
