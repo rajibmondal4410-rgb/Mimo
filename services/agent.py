@@ -3,7 +3,7 @@ import json
 import httpx
 import asyncio
 from typing import List, Dict, Any, Tuple
-from services.sheets import update_sheet_cell, append_sheet_row, extract_spreadsheet_id
+
 
 # ── Import ALL Services (Python equivalents) ──
 from services.gmail import get_recent_emails, format_emails_for_context
@@ -11,6 +11,7 @@ from services.calendar import get_upcoming_events, create_calendar_event, format
 from services.drive import list_all_drive_files, search_drive_files, read_google_doc, format_files_for_context
 from services.sheets import read_sheet_range, format_sheet_for_context
 from services.tasks import get_tasks, create_task, format_tasks_for_context
+from services.sheets import update_sheet_cell, append_sheet_row, extract_spreadsheet_id
 
 # ─────────────────────────────────────────────────────────────────────
 # PROVIDER HELPERS
