@@ -3,6 +3,7 @@ import json
 import httpx
 import asyncio
 from typing import List, Dict, Any, Tuple
+from services.sheets import update_sheet_cell, append_sheet_row, extract_spreadsheet_id
 
 # ── Import ALL Services (Python equivalents) ──
 from services.gmail import get_recent_emails, format_emails_for_context
@@ -273,22 +274,75 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_google_sheets",
-            "description": "Read data from a Google Spreadsheet. When user asks about specific data in a sheet, use a targeted range.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "spreadsheetId": {"type": "string", "description": "ONLY the ID between /d/ and /edit in the URL."},
-                    "range": {"type": "string", "description": "Cell range. Use A1:Z200 to get more rows. Default A1:Z100."},
-                    "sheetName": {"type": "string", "description": "Optional sheet/tab name e.g. 'SAMPLE 1'"}
-                },
-                "required": ["spreadsheetId"]
-            }
+    
+          {
+    "type": "function",
+    "function": {
+        "name": "read_google_sheets",
+        "description": (
+            "Read data from a Google Spreadsheet. "
+            "The spreadsheetId MUST be the ID between /d/ and /edit in the URL — never a full URL. "
+            "If the user has saved sheets, their IDs are injected into the system prompt — use them directly. "
+            "If the user mentions a tab name like 'SAMPLE 1', pass it as sheetName."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "spreadsheetId": {"type": "string", "description": "Only the ID between /d/ and /edit."},
+                "range": {"type": "string", "description": "Cell range e.g. A1:Z500."},
+                "sheetName": {"type": "string", "description": "Tab name e.g. 'SAMPLE 1'. Omit if unknown."}
+            },
+            "required": ["spreadsheetId"]
         }
     }
+},
+{
+    "type": "function",
+    "function": {
+        "name": "update_sheet_cell",
+        "description": "Update a specific cell in a Google Spreadsheet. Read the sheet first to find the exact row, then call this with the precise cell range.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "spreadsheetId": {"type": "string", "description": "Only the ID between /d/ and /edit."},
+                "range": {"type": "string", "description": "Exact cell e.g. \"'SAMPLE 1'!B2\""},
+                "value": {"type": "string", "description": "The new value to write."}
+            },
+            "required": ["spreadsheetId", "range", "value"]
+        }
+    }
+},
+{
+    "type": "function",
+    "function": {
+        "name": "append_sheet_row",
+        "description": "Add a new row to the bottom of a Google Spreadsheet tab. Use when user wants to add a new entry or record.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "spreadsheetId": {"type": "string", "description": "Only the ID between /d/ and /edit."},
+                "sheetName": {"type": "string", "description": "Tab name e.g. 'SAMPLE 1'"},
+                "values": {"type": "array", "items": {"type": "string"}, "description": "Values in column order matching sheet headers."}
+            },
+            "required": ["spreadsheetId", "sheetName", "values"]
+        }
+    }
+},
+{
+    "type": "function",
+    "function": {
+        "name": "remember_sheet",
+        "description": "Save a Google Spreadsheet permanently so the user never has to paste the URL again. Call when user says 'remember my sheet', 'save this spreadsheet', or pastes a Sheets URL with a name.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short friendly name e.g. 'b2b leads', 'sales pipeline'"},
+                "spreadsheetId": {"type": "string", "description": "The ID from the Google Sheets URL (between /d/ and /edit)"}
+            },
+            "required": ["name", "spreadsheetId"]
+        }
+    }
+},    
 ]
 
 SYSTEM_PROMPT = """You are Mimo, an elite AI assistant connected to Google Workspace.
@@ -307,7 +361,7 @@ RULES:
    BODY: [body text]
    Then tell the user to click "Approve & Send" to send it. This applies to anyone the user wants to email — a friend, family, a company, anyone — not just professional contacts.
 9. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
-10. CRITICAL — Sheets: read full sheet with range A1:Z200 and look carefully at ALL columns.
+10. CRITICAL — Sheets: If the user's saved spreadsheets are listed in this prompt, use those IDs directly — never ask for the URL again. Read with range A1:Z500 and look at ALL columns. To edit a cell, read first to find the exact row number, then call update_sheet_cell. To add data, call append_sheet_row with values matching the header order.
 11. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
 12. If you cannot find data, say "I couldn't find that" — never make up an answer.
 13. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", 
@@ -322,8 +376,9 @@ RULES:
 
 
 # ── STEP 1: Intent detection ─────────────────────────────────────────
-async def determine_intent_and_ask(question: str, history: List[Dict[str, str]], timezone: str = "Asia/Kolkata") -> Dict[str, Any]:
+async def determine_intent_and_ask(question: str, history: List[Dict[str, str]], timezone: str = "Asia/Kolkata", sheets_context: str = "") -> Dict[str, Any]:
     messages = history[-4:] + [{"role": "user", "content": question}]
+    prompt = SYSTEM_PROMPT + sheets_context if sheets_context else SYSTEM_PROMPT
 
     # Gmail-related questions are routed to Groq only, with no fallback,
     # so tool-argument parsing stays consistent. We do a cheap keyword
@@ -353,7 +408,7 @@ async def determine_intent_and_ask(question: str, history: List[Dict[str, str]],
 
 
 # ── STEP 2: Execute tools ────────────────────────────────────────────
-async def execute_agent_search(intent_data: Dict[str, Any], google_access_token: str, timezone: str = "Asia/Kolkata") -> Dict[str, Any]:
+async def execute_agent_search(intent_data: Dict[str, Any], google_access_token: str, timezone: str = "Asia/Kolkata", user_id: str = None) -> Dict[str, Any]:
     tool_calls = intent_data["toolCalls"]
     raw_message = intent_data["rawMessage"]
     messages = intent_data["messages"]
@@ -438,17 +493,43 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
             if name == 'read_google_sheets':
                 sources_used.append('Sheets')
                 raw_id = (input_data.get("spreadsheetId") or "").strip()
-                import re
-                match = re.search(r"/d/([\w-]+)", raw_id)
-                spreadsheet_id = match.group(1) if match else raw_id
-
-                range_str = input_data.get("range") or "A1:Z200"
+                spreadsheet_id = extract_spreadsheet_id(raw_id)
+                range_str = input_data.get("range") or "A1:Z500"
                 if input_data.get("sheetName"):
                     range_str = f"'{input_data['sheetName']}'!{range_str}"
-
                 print(f"[Sheets] ID: \"{spreadsheet_id}\", Range: \"{range_str}\"")
                 rows = await read_sheet_range(google_access_token, spreadsheet_id, range_str)
-                return {"id": call_id, "name": name, "resultData": format_sheet_for_context(rows)}
+                sheet_label = input_data.get("sheetName") or spreadsheet_id
+                return {"id": call_id, "name": name, "resultData": format_sheet_for_context(rows, sheet_label)}
+
+            if name == 'update_sheet_cell':
+                sources_used.append('Sheets')
+                result = await update_sheet_cell(
+                    google_access_token,
+                    input_data.get("spreadsheetId"),
+                    input_data.get("range"),
+                    input_data.get("value")
+                )
+                return {"id": call_id, "name": name, "resultData": f"✅ Updated {result['updated_range']} — {result['updated_cells']} cell(s) changed."}
+
+            if name == 'append_sheet_row':
+                sources_used.append('Sheets')
+                result = await append_sheet_row(
+                    google_access_token,
+                    input_data.get("spreadsheetId"),
+                    input_data.get("sheetName", "Sheet1"),
+                    input_data.get("values", [])
+                )
+                return {"id": call_id, "name": name, "resultData": f"✅ New row added to {result['updated_range']}."}
+
+            if name == 'remember_sheet':
+                from services.database import save_user_sheet
+                clean_id = extract_spreadsheet_id(input_data.get("spreadsheetId", ""))
+                sheet_name = input_data.get("name", "my sheet").lower()
+                if user_id and clean_id:
+                    await save_user_sheet(user_id, sheet_name, clean_id)
+                    return {"id": call_id, "name": name, "resultData": f"✅ Saved '{sheet_name}'. I'll remember this sheet from now on."}
+                return {"id": call_id, "name": name, "resultData": "Could not save — missing sheet ID."}
 
             if name == 'list_drive_files':
                 sources_used.append('Drive')

@@ -86,3 +86,37 @@ async def update_google_access_token(user_id: str, access_token: str, expiry: in
         }).eq("id", user_id).execute()
     except Exception as e:
         raise Exception(f"Supabase token update failed: {str(e)}")
+    
+async def save_user_sheet(user_id: str, name: str, spreadsheet_id: str) -> Dict[str, Any]:
+    """Saves a named spreadsheet reference for the user."""
+    try:
+        response = supabase.table("user_sheets").upsert(
+            {"user_id": user_id, "name": name.lower(), "spreadsheet_id": spreadsheet_id},
+            on_conflict="user_id,name"
+        ).execute()
+        return response.data[0] if response.data else {}
+    except Exception as e:
+        raise Exception(f"Save sheet failed: {str(e)}")
+
+
+async def get_user_sheets(user_id: str) -> List[Dict[str, Any]]:
+    """Gets all saved spreadsheet references for the user."""
+    try:
+        response = supabase.table("user_sheets").select("*").eq("user_id", user_id).execute()
+        return response.data or []
+    except Exception as e:
+        raise Exception(f"Get sheets failed: {str(e)}")
+
+
+async def find_user_sheet(user_id: str, name: str) -> Optional[Dict[str, Any]]:
+    """Finds a sheet by fuzzy name match."""
+    try:
+        response = supabase.table("user_sheets").select("*").eq("user_id", user_id).execute()
+        sheets = response.data or []
+        name_lower = name.lower()
+        for s in sheets:
+            if name_lower in s["name"] or s["name"] in name_lower:
+                return s
+        return None
+    except Exception as e:
+        return None
