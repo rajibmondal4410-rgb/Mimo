@@ -63,7 +63,7 @@ async def call_gemini(messages, system_prompt, tools=None):
         raise ValueError("No GEMINI_API_KEY found.")
 
     body = {
-        "model": "gemini-2.5-flash",   # ← higher free quota than 2.0-flash
+        "model": "gemini-2.5-flash",
         "messages": [{"role": "system", "content": system_prompt}] + messages,
         "temperature": 0
     }
@@ -93,7 +93,15 @@ async def call_gemini(messages, system_prompt, tools=None):
                 })
             return {"action": "tool_calls", "calls": calls, "rawMessage": msg}
 
-        return {"action": "text", "text": msg.get("content") or ""}
+        text = msg.get("content") or ""
+
+        # Gemini sometimes leaks tool-call syntax as plain text instead of
+        # issuing a real tool_calls response. Detect this and force a retry
+        # via Groq instead of returning the broken/hallucinated text to the user.
+        if "<function>" in text or "function_calls" in text.lower():
+            raise RuntimeError("Gemini leaked tool call syntax as text instead of executing it.")
+
+        return {"action": "text", "text": text}
 
 
 # ── NOTE on provider routing ──────────────────────────────────────────
@@ -597,7 +605,16 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
         "Spreadsheet:" in (m.get("content") or "") and len(m.get("content") or "") > 8000
         for m in final_messages
     )
-    final_res = await synthesise(final_messages, SYSTEM_PROMPT, groq_only=(groq_only and not has_large_sheet_data))
+    async def synthesise(final_messages, system_prompt, groq_only=False):
+      if groq_only:
+        return await call_groq(final_messages, system_prompt, None)
+      errors = []
+      for fn in [call_gemini, call_groq]:  # try Gemini first for large data, fallback Groq
+         try:
+             return await fn(final_messages, system_prompt, None)
+         except Exception as e:
+             errors.append(str(e))
+      raise RuntimeError(f"Synthesis failed: {' | '.join(errors)}")
 
     return {
         "answer": final_res.get("text") or "Done.",
