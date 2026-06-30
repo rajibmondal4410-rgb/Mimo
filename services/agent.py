@@ -301,11 +301,11 @@ TOOLS = [
     "type": "function",
     "function": {
         "name": "update_sheet_cell",
-        "description": "Update a specific cell in a Google Spreadsheet. Read the sheet first to find the exact row, then call this with the precise cell range.",
+        "description": "Update a specific cell in a Google Spreadsheet. Use the ACTUAL spreadsheet ID from the saved sheets list in the system prompt (the long alphanumeric string), never the friendly name like 'my sheet'. Read the sheet first to find the exact row, then call this with the precise cell range.",
         "parameters": {
             "type": "object",
             "properties": {
-                "spreadsheetId": {"type": "string", "description": "Only the ID between /d/ and /edit."},
+                "spreadsheetId": {"type": "string", "description": "The REAL spreadsheet ID (long alphanumeric string from the saved sheets list), NOT the friendly name."},
                 "range": {"type": "string", "description": "Exact cell e.g. \"'SAMPLE 1'!B2\""},
                 "value": {"type": "string", "description": "The new value to write."}
             },
@@ -362,7 +362,7 @@ RULES:
    BODY: [body text]
    Then tell the user to click "Approve & Send" to send it. This applies to anyone the user wants to email — a friend, family, a company, anyone — not just professional contacts.
 9. CRITICAL — Google Docs: ALWAYS call search_google_drive FIRST to get the fileId. Then call read_google_doc with that fileId.
-10. CRITICAL — Sheets: If the user's saved spreadsheets are listed in this prompt, use those IDs directly — never ask for the URL again. Read with range A1:Z500 and look at ALL columns. To edit a cell, read first to find the exact row number, then call update_sheet_cell. To add data, call append_sheet_row with values matching the header order.
+10. CRITICAL — Sheets: The saved spreadsheets list above shows "name": friendly label, and "spreadsheet ID": the real ID to use in every tool call. ALWAYS pass the real ID (the long alphanumeric string), NEVER the friendly name like "my sheet" or "b2b leads" as the spreadsheetId parameter. Read with range A1:Z1000 to capture the full sheet including rows far down. To edit a cell, first read the sheet to find the exact row number by matching the name/value the user mentioned, then call update_sheet_cell. To add data, call append_sheet_row.
 11. CRITICAL — Calendar: generate startTime as naive local datetime, NO timezone suffix e.g. "2026-06-20T14:00:00".
 12. If you cannot find data, say "I couldn't find that" — never make up an answer.
 13. CRITICAL — Draft email: When the user says "write a draft" or "send an email to X", 
@@ -578,16 +578,26 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
 
     # Context window protection check
     total_chars = sum(len(m.get("content") or "") for m in final_messages)
-    if total_chars > 20000:
+    if total_chars > 28000:
         truncated_messages = []
         for m in final_messages:
-            if m.get("role") == "tool" and m.get("content") and len(m["content"]) > 4000:
-                m["content"] = m["content"][:4000] + "\n...[content truncated to fit context]"
+            content = m.get("content") or ""
+            # Don't truncate sheets data — the user needs to see far-down rows.
+            # Only truncate if it's clearly not sheet data (no "Row " markers).
+            is_sheet_data = "Spreadsheet:" in content and "Row " in content
+            if m.get("role") == "tool" and content and len(content) > 12000 and not is_sheet_data:
+                m["content"] = content[:12000] + "\n...[content truncated to fit context]"
             truncated_messages.append(m)
         final_messages = truncated_messages
-        print(f"[Agent] Content truncated from {total_chars} chars for Groq compatibility")
+        print(f"[Agent] Content truncated from {total_chars} chars (sheets preserved)")
 
-    final_res = await synthesise(final_messages, SYSTEM_PROMPT, groq_only=groq_only)
+    # If sheets data is large, prefer Gemini for synthesis — it handles
+    # bigger context windows better than Groq for dense spreadsheet data
+    has_large_sheet_data = any(
+        "Spreadsheet:" in (m.get("content") or "") and len(m.get("content") or "") > 8000
+        for m in final_messages
+    )
+    final_res = await synthesise(final_messages, SYSTEM_PROMPT, groq_only=(groq_only and not has_large_sheet_data))
 
     return {
         "answer": final_res.get("text") or "Done.",
