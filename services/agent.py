@@ -615,6 +615,8 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
          except Exception as e:
              errors.append(str(e))
       raise RuntimeError(f"Synthesis failed: {' | '.join(errors)}")
+    
+    final_res = await synthesise(final_messages, SYSTEM_PROMPT, groq_only=groq_only)
 
     return {
         "answer": final_res.get("text") or "Done.",
