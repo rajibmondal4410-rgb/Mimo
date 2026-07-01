@@ -424,6 +424,17 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
     groq_only = intent_data.get("groqOnly", False)
     sources_used = []
 
+    # Fetch the user's real saved sheet IDs once, to guard against
+    # hallucinated spreadsheet IDs from the model
+    user_saved_sheet_ids = []
+    if user_id:
+        try:
+            from services.database import get_user_sheets
+            saved = await get_user_sheets(user_id)
+            user_saved_sheet_ids = [s["spreadsheet_id"] for s in saved]
+        except Exception:
+            pass
+
     async def run_single_tool(call: Dict[str, Any]) -> Dict[str, Any]:
         name = call["name"]
         input_data = call["input"]
@@ -503,6 +514,14 @@ async def execute_agent_search(intent_data: Dict[str, Any], google_access_token:
                 sources_used.append('Sheets')
                 raw_id = (input_data.get("spreadsheetId") or "").strip()
                 spreadsheet_id = extract_spreadsheet_id(raw_id)
+
+                # Safety net: if the model hallucinated an ID that doesn't match any
+                # of the user's saved sheets, and the user has saved sheets, override
+                # with the correct one instead of hitting Google with a fake ID.
+                if user_saved_sheet_ids and spreadsheet_id not in user_saved_sheet_ids:
+                   if len(user_saved_sheet_ids) == 1:
+                     print(f"[Sheets] Model passed wrong ID '{spreadsheet_id}', correcting to saved sheet.")
+                     spreadsheet_id = user_saved_sheet_ids[0]
                 range_str = input_data.get("range") or "A1:Z500"
                 if input_data.get("sheetName"):
                     range_str = f"'{input_data['sheetName']}'!{range_str}"
